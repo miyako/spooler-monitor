@@ -6,8 +6,13 @@ on:
     inputs:
       version_tag:
         description: Existing matching version tag (v<SemVer>); never creates a tag
-        required: true
+        required: false
         type: string
+      validation_only:
+        description: Build/sign/notarize selected revision without a tag or publication
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -18,6 +23,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.release_ref.outputs.sha }}
       release_tag: ${{ steps.release_ref.outputs.tag }}
+      validation_only: ${{ steps.release_ref.outputs.validation_only }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,11 +35,17 @@ jobs:
         id: release_ref
         env:
           VERSION_TAG: ${{ inputs.version_tag }}
-        run: >-
-          python scripts/release_ref.py resolve
-          --event "$GITHUB_EVENT_NAME" --ref-type "$GITHUB_REF_TYPE"
-          --ref-name "$GITHUB_REF_NAME" --version-tag "$VERSION_TAG"
-          --event-sha "$GITHUB_SHA"
+          VALIDATION_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_only }}
+        run: |
+          if [ "$VALIDATION_ONLY" = "true" ]; then
+            python scripts/release_ref.py validation --event "$GITHUB_EVENT_NAME" --event-sha "$GITHUB_SHA"
+          else
+            python scripts/release_ref.py resolve \
+              --event "$GITHUB_EVENT_NAME" --ref-type "$GITHUB_REF_TYPE" \
+              --ref-name "$GITHUB_REF_NAME" --version-tag "$VERSION_TAG" \
+              --event-sha "$GITHUB_SHA"
+            echo "validation_only=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.release_ref.outputs.sha }}
@@ -41,7 +53,13 @@ jobs:
         env:
           FOURD_ENABLED: ${{ vars.FOURD_ENABLED }}
           RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
-        run: python scripts/ci_config.py validate --release --tag "$RELEASE_TAG"
+          VALIDATION_ONLY: ${{ steps.release_ref.outputs.validation_only }}
+        run: |
+          if [ "$VALIDATION_ONLY" = "true" ]; then
+            python scripts/ci_config.py validate --tag "$RELEASE_TAG"
+          else
+            python scripts/ci_config.py validate --release --tag "$RELEASE_TAG"
+          fi
 
   native:
     needs: gate
@@ -52,7 +70,9 @@ jobs:
 
   compile:
     needs: [gate, native]
+    if: github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
     runs-on: macos-15
+    timeout-minutes: 55
     env:
       FOURD_ENABLED: ${{ vars.FOURD_ENABLED }}
       TOOL4D_URL: ${{ vars.TOOL4D_URL }}
@@ -65,7 +85,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python scripts/ci_config.py validate --release --tag "$RELEASE_TAG"
+      - name: Revalidate exact selected configuration
+        env:
+          VALIDATION_ONLY: ${{ needs.gate.outputs.validation_only }}
+        run: |
+          if [ "$VALIDATION_ONLY" = "true" ]; then
+            python scripts/ci_config.py validate --tag "$RELEASE_TAG"
+          else
+            python scripts/ci_config.py validate --release --tag "$RELEASE_TAG"
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: component-resources
@@ -87,31 +115,45 @@ jobs:
       - name: Download SHA-256-verified tool4D
         run: python scripts/ci_config.py download-tool4d
       - name: Test interpreted component from a real 4D host before compilation
-        run: python scripts/test_4d.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+        run: |
+          python scripts/test_4d.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+          cp build/host-status.json build/source-host-status.json
       - name: Compile both 4D targets (no source-only fallback)
         run: python scripts/compile_component.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
-      - name: Package unsigned compiled dependency-manager component
+      - name: Package verified unsigned intermediate (not uploaded as a release)
         run: python scripts/package_component.py --tag "$RELEASE_TAG" --unpack-test
-      - name: Require real host tests against the actual compiled release component
-        shell: python
-        run: |
-          import pathlib, subprocess, sys
-          sys.path.insert(0, "scripts")
-          from ci_config import load_config
-          config = load_config(initialized=True)
-          component = pathlib.Path("build/release-test") / (config["repository"] + ".4dbase")
-          subprocess.run([sys.executable, "scripts/test_4d.py", "--tool4d",
-                          ".tools/tool4d.app/Contents/MacOS/tool4d",
-                          "--component", str(component)], check=True)
+      - name: Developer ID sign, notarize and host-test the exact final ZIP
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARYTOOL_APPLE_ID: ${{ secrets.NOTARYTOOL_APPLE_ID }}
+          NOTARYTOOL_PASSWORD: ${{ secrets.NOTARYTOOL_PASSWORD }}
+          NOTARYTOOL_TEAM_ID: ${{ secrets.NOTARYTOOL_TEAM_ID }}
+        run: python scripts/sign_release.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+      - name: Verify final signed-byte report before upload
+        run: python scripts/sign_release.py --verify-report
       - uses: actions/upload-artifact@v4
         with:
           name: compiled-release
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.signing.json
           if-no-files-found: error
+          retention-days: 7
+      - name: Preserve non-secret compile and host diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-diagnostics
+          path: |
+            build/*status.json
+          if-no-files-found: warn
           retention-days: 7
 
   publish:
     needs: [gate, compile]
+    if: needs.gate.outputs.validation_only == 'false' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -135,4 +177,5 @@ jobs:
         run: |
           git fetch --force --no-tags origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           python scripts/release_ref.py verify --tag "$RELEASE_TAG" --expected-sha "$RELEASE_SHA"
-          gh release create "$RELEASE_TAG" dist/*.zip --verify-tag --title "$RELEASE_TAG" --notes "Unsigned compiled component with universal macOS and x64 Windows CLI resources. Interpreted class and method sources are excluded. This artifact is not signed or notarized. Built with the free tool4D compiler from an explicitly SHA-256-pinned download."
+          python scripts/sign_release.py --verify-report
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.signing.json --verify-tag --title "$RELEASE_TAG" --notes "Compiled dependency-manager component with Developer ID signed and Apple-notarized macOS CLI and generated native library, plus x64 Windows CLI. The exact final ZIP passed real Apple Silicon compiled-host tests. ZIP/bare-code ticket delivery uses Apple online lookup, not stapling or offline assurance. Interpreted class and method sources are excluded. See the adjacent signing report for exact hashes, pre-sign native provenance and platform limitations."

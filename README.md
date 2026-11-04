@@ -188,9 +188,72 @@ mode true. The pair is `dist/spooler-monitor.zip` and
 alone is **partial**, with `release_ready:false`; it is not native Intel/Windows
 4D, dependency-manager download, signing or physical printing evidence.
 
-Ordinary CI does not publish. The inherited release workflow requires an
-authorized matching existing `v<version>` tag, explicit hosted 4D opt-in and
-real final-package host checks. Do not create tags or publish as a build step.
+Ordinary CI does not publish. The destination-specific signed release contract
+below supersedes the template's historical unsigned-release instructions;
+the generic unsigned local acceptance path above remains unchanged.
+
+## Signed release validation and future publication
+
+The authorized `.github/workflows/release.yml` pipeline uses
+`scripts/sign_release.py`. In **Actions → Release compiled component → Run
+workflow**, `validation_only` is a Boolean defaulting to **true**:
+
+| Mode | Immutable source and gates | Publication |
+| --- | --- | --- |
+| Validation-only dispatch | Selected workflow ref's `github.sha`; no existing version tag or `FOURD_ENABLED` required | Cannot publish |
+| Production existing-tag path | Existing matching `v<version>` tag resolved/peeled to a commit SHA; `FOURD_ENABLED=true` required | Future separately authorized publication only |
+
+Every native matrix job and downstream stage uses the same resolved SHA.
+Production re-verifies the tag has not moved before publication; selecting a
+UI branch cannot replace that tag's source. No tag creation, publication or
+merge is authorized by the current implementation task.
+
+Six Actions secrets are already registered: `APPLE_DEVELOPER_ID_CERTIFICATE`
+(base64 Developer ID Application P12 including its private key),
+`APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`NOTARYTOOL_APPLE_ID`, `NOTARYTOOL_PASSWORD` (Apple app-specific password) and
+`NOTARYTOOL_TEAM_ID`. No `CODESIGN_APPLE_ID` is needed: the helper requires
+exactly one imported valid **Developer ID Application** identity and verifies
+its team against `NOTARYTOOL_TEAM_ID`. The isolated temporary keychain is
+deleted on success and every failure. No local credentials are required for
+unsigned development or acceptance; never copy secrets into source or logs.
+See [AGENTS.md signing instructions](AGENTS.md#destination-specific-signed-release-contract)
+for the authoritative credential and verification rules.
+
+The required order is:
+
+1. Native same-ref builds/tests and manifest-validated assembly, then real
+   source-host tests, real compilation and strict input/output digest marker
+   validation.
+2. Package an unsigned intermediate; unpack its compiled `.4dbase` into a
+   separate signing stage. Sign only the universal macOS CLI and generated
+   `Libraries` Mach-O dylib with hardened runtime and secure timestamp, without
+   extra entitlements. Do not sign the `.4DZ` or arbitrary resources.
+3. Deterministically produce final `dist/spooler-monitor.zip`, preserving the
+   `.4DZ`, Windows executable and all non-code resource bytes, ZIP directory
+   records and executable modes.
+4. Submit that final ZIP to `notarytool` and require **Accepted**. Verify strict
+   code signatures, team, secure timestamp and hardened runtime on every
+   architecture, reporting CLI and dylib checks separately. Perform online
+   Gatekeeper CLI assessment only where the actual tool supports it; unavailable
+   assessment is `not_run`, never an inferred pass.
+5. Run real compiled-host tests against the **exact final ZIP's** unpacked
+   component after signing. Record final signed-byte inventory and evidence in
+   `dist/spooler-monitor.signing.json`, bound to the final ZIP SHA256, original
+   unsigned ZIP SHA256 and native pre-sign manifests.
+
+Source/build manifests and the compile marker remain unchanged pre-sign
+evidence. Signed final hashes are separate; never rewrite a marker to approve
+modified bytes. ZIPs and bare CLI/dylib files cannot be stapled: notarization
+uses Apple's online ticket lookup, with **no offline stapled guarantee** and
+no arbitrary DMG added as a workaround.
+
+Current signing, notarization, online Gatekeeper and final signed-ZIP host
+evidence is **`not_run`**; registered secrets and these instructions do not
+prove an Accepted submission. Native Intel/Windows 4D loading, live queue
+mutations and published dependency-manager installation remain `not_run`
+unless separately executed and recorded. Unsigned local acceptance does not
+satisfy the signed release gates.
 
 ## Installation
 
