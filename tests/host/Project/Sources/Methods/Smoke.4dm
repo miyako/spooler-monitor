@@ -80,8 +80,10 @@ $result:=$tool.list()
 $report.readOnly:=$result
 $report.readOnlyValid:=True
 $report.readOnlyMode:="success"
+$report.readOnlyGet:=New object("status"; "not_run"; "reason"; "No queues are configured")
 If (Not($result.ok))
 	$report.readOnlyMode:="backend_failure"
+	$report.readOnlyGet.reason:="List query failed: "+$result.error.code
 	If (New collection("access_denied"; "backend_unavailable"; "unsupported_operation"; "native_error").indexOf($result.error.code)<0)
 		$report.readOnlyValid:=False
 		$report.success:=False
@@ -89,6 +91,25 @@ If (Not($result.ok))
 	If ($result.value=Null)
 		$report.readOnlyValid:=False
 		$report.success:=False
+	End if
+Else
+	If ($result.value.queues.length>0)
+		HOST_Phase:="read-only get first configured queue"
+		$queue:=$result.value.queues[0]
+		$result:=$tool.get($queue.id)
+		$report.readOnlyGet:=New object("status"; "failed"; "reason"; "Read-only get did not return the requested queue"; "requestedID"; $queue.id; "result"; $result; "idMatches"; False)
+		If ($result.ok)
+			If (Length($result.value.queue.id)=Length($queue.id))
+				If (Position($queue.id; $result.value.queue.id; *)=1)
+					$report.readOnlyGet.status:="passed"
+					$report.readOnlyGet.reason:="Read-only get returned the requested queue"
+					$report.readOnlyGet.idMatches:=True
+				End if
+			End if
+		End if
+		If ($report.readOnlyGet.status#"passed")
+			$report.success:=False
+		End if
 	End if
 End if
 HOST_Phase:="queue ID guards (no mutation submitted)"

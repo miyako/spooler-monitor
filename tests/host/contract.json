@@ -42,6 +42,8 @@
       {"path": "/readOnlyMode", "matches": "success|backend_failure"},
       {"path": "/readOnly/value/protocol", "equals": 1},
       {"path": "/readOnly/value/operation", "equals": "list"},
+      {"path": "/readOnlyGet/status", "matches": "passed|not_run"},
+      {"path": "/readOnlyGet/reason", "matches": ".+"},
       {"path": "/invalidIDs", "length": 54, "each": [
         {"path": "/ok", "equals": false},
         {"path": "/error/code", "equals": "invalid_argument"},

@@ -10,6 +10,10 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def portable_input_key(path, root):
+    return path.relative_to(root).as_posix()
+
+
 def source_digest(root):
     root = Path(root).resolve()
     files = [root / "template.json", root / "package.json"]
@@ -17,8 +21,9 @@ def source_digest(root):
         "tests/cli-contract.json", "scripts/build_cli.py",
         "scripts/build_provenance.py", "scripts/native_dependencies.py")
         if (root / name).is_file()]
-    files += sorted(path for path in (root / "cli").rglob("*")
-                    if path.is_file() and path.relative_to(root / "cli").parts[0] not in {"target", "build"})
+    files += sorted((path for path in (root / "cli").rglob("*")
+                     if path.is_file() and path.relative_to(root / "cli").parts[0] not in {"target", "build"}),
+                    key=lambda path: portable_input_key(path, root))
     digest = hashlib.sha256()
     for path in files:
         if any(parent.is_symlink() for parent in [path, *path.parents]):

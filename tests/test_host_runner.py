@@ -36,6 +36,7 @@ def valid_status(compiled=False):
               "cases": cases, "capabilities": capabilities, "version": version,
               "readOnlyMode": "success",
               "readOnly": success({"protocol": 1, "ok": True, "operation": "list", "queues": []}),
+              "readOnlyGet": {"status": "not_run", "reason": "No queues are configured"},
               "longQueue": success({"protocol": 1, "ok": True, "operation": "get",
                                     "queue": {"id": "x" * 256, "displayName": "Fixture", "backend": "cups",
                                               "state": "idle", "acceptingJobs": True, "jobCount": 0,
@@ -140,6 +141,22 @@ class ContractTests(unittest.TestCase):
         status["longQueue"]["value"]["queue"]["id"] = "x" * 255
         with self.assertRaisesRegex(ValueError, "pattern mismatch"):
             runner.validate_status(status, CONTRACT, False)
+
+    def test_read_only_get_requires_explicit_status_and_reason(self):
+        status = valid_status()
+        self.assertEqual(status["readOnlyGet"]["status"], "not_run")
+        self.assertNotIn("result", status["readOnlyGet"])
+        runner.validate_status(status, CONTRACT, False)
+        for key, value in (("status", "failed"), ("status", "skipped"), ("reason", ""), ("reason", None)):
+            status = valid_status()
+            status["readOnlyGet"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                runner.validate_status(status, CONTRACT, False)
+        for key in ("status", "reason"):
+            status = valid_status()
+            del status["readOnlyGet"][key]
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                runner.validate_status(status, CONTRACT, False)
 
     def test_cases_must_match_all_contract_expectations(self):
         for cases in ([], None, {}, valid_status()["cases"][:-1], valid_status()["cases"] + [{}]):

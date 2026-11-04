@@ -3,7 +3,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import struct
 import subprocess
@@ -22,7 +22,7 @@ import ci_config
 import package_component
 import native_dependencies
 from compile_component import input_digest, output_digest
-from build_provenance import record, source_digest
+from build_provenance import record, source_digest, portable_input_key
 
 
 def synthetic_universal():
@@ -470,6 +470,18 @@ class DeliveryTests(unittest.TestCase):
         recipe.parent.mkdir()
         recipe.write_text("# build recipe\n")
         self.assertNotEqual(with_contract, source_digest(self.root))
+
+    def test_native_provenance_orders_mixed_case_paths_identically_on_windows(self):
+        names = ["cli/main.cpp", "cli/README.md", "cli/cups_backend.cpp", "cli/CMakeLists.txt"]
+        expected = ["cli/CMakeLists.txt", "cli/README.md", "cli/cups_backend.cpp", "cli/main.cpp"]
+        for kind, prefix in ((PureWindowsPath, "C:/source"), (PurePosixPath, "/source")):
+            root = kind(prefix)
+            paths = [root / name for name in names]
+            ordered = sorted(paths, key=lambda path: portable_input_key(path, root))
+            self.assertEqual([portable_input_key(path, root) for path in ordered], expected)
+        windows_root = PureWindowsPath("C:/source")
+        windows_default = sorted(windows_root / name for name in names)
+        self.assertNotEqual([path.relative_to(windows_root).as_posix() for path in windows_default], expected)
 
     def test_windows_dependency_audit_rejects_unbundled_vc_dlls(self):
         expected = ["KERNEL32.dll", "WINSPOOL.DRV", "api-ms-win-core-synch-l1-2-0.dll"]
