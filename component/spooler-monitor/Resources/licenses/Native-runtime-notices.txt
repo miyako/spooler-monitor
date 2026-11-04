@@ -1,0 +1,24 @@
+spooler-monitor native runtime dependencies
+
+The project source is MIT licensed; see the included component LICENSE.
+No CUPS or Microsoft source is copied into this repository.
+
+macOS: the helper dynamically links the operating system's libcups, libc++
+and libSystem. Those system libraries are not redistributed in this package.
+The installed system CUPS implementation and its licensing remain Apple's
+operating-system components, not this project's MIT code.
+
+Windows: the helper links system Winspool and the release Microsoft C/C++
+runtime statically (/MT). No debug runtime, Winspool DLL, Visual Studio tool,
+compiler or separate Microsoft runtime DLL is redistributed. Microsoft runtime
+object code remains subject to Microsoft's Visual Studio license terms, not
+the MIT license for this project's own source.
+Native Windows CI uses the Microsoft Visual Studio 2022 toolchain supplied
+by the hosted Windows Server 2022 runner. Rebuilders must use an appropriately
+licensed compiler and comply with its Distributable Code terms.
+References reviewed for this distribution:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+https://visualstudio.microsoft.com/license-terms/
+The direct-import audit rejects separate unbundled VC runtime DLL dependencies.
+
+No signing or notarization is provided by this unsigned development package.

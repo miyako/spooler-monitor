@@ -1,6 +1,7 @@
 """Content identity for same-source CLI builds, independent of checkout directory."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -9,11 +10,20 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def portable_input_key(path, root):
+    return path.relative_to(root).as_posix()
+
+
 def source_digest(root):
     root = Path(root).resolve()
     files = [root / "template.json", root / "package.json"]
-    files += sorted(path for path in (root / "cli").rglob("*")
-                    if path.is_file() and path.relative_to(root / "cli").parts[0] not in {"target", "build"})
+    files += [root / name for name in (
+        "tests/cli-contract.json", "scripts/build_cli.py",
+        "scripts/build_provenance.py", "scripts/native_dependencies.py")
+        if (root / name).is_file()]
+    files += sorted((path for path in (root / "cli").rglob("*")
+                     if path.is_file() and path.relative_to(root / "cli").parts[0] not in {"target", "build"}),
+                    key=lambda path: portable_input_key(path, root))
     digest = hashlib.sha256()
     for path in files:
         if any(parent.is_symlink() for parent in [path, *path.parents]):
@@ -36,6 +46,10 @@ def record(root, target, executable, tested, toolchain):
     status = {"schema": 1, "target": target, "source_sha256": source_digest(root),
               "commit": commit(root), "binary_sha256": sha256(executable),
               "execution": "passed" if tested else "not_run", "toolchain": toolchain}
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        status["ci"] = {key: os.environ.get(key) for key in
+                        ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+                         "GITHUB_WORKFLOW", "GITHUB_JOB")}
     executable.with_name("build-manifest.json").write_text(json.dumps(status, indent=2) + "\n")
     return status
 

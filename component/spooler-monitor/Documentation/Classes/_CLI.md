@@ -1,7 +1,7 @@
 # _CLI (internal convention)
 
 `cs._CLI.new(executableName : Text; target : Text)` is the reusable bundled
-executable resolver. The host can technically access `cs.TemplateCLI._CLI`;
+executable resolver. The host can technically access `cs.SpoolerMonitor._CLI`;
 underscore naming is not true private access in 4D.
 
 `execute(arguments : Collection) : Object` selects `/RESOURCES/bin/macOS/<name>`
@@ -12,7 +12,7 @@ shell, download, copied PDF algorithm or queue.
 
 macOS default/`macOS-universal` uses the two-slice executable. Windows requires
 explicit `Windows-x64`. Unknown selection or OS returns an explicit error;
-Windows ARM64 native execution is not implemented. See [Greeting](Greeting.md)
+Windows ARM64 native execution is not implemented. See [Queue](Queue.md)
 for the common result/error shape.
 
 The read-only `compiled` Boolean evaluates `Is compiled mode` inside the

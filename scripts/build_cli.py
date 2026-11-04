@@ -81,6 +81,20 @@ def require_toolchain(language):
         raise ValueError(f"{language} {'.'.join(map(str, minimum))} or newer is required")
 
 
+def cmake_compiler_identity(build_directory):
+    candidates = sorted(Path(build_directory).glob("CMakeFiles/*/CMakeCXXCompiler.cmake"))
+    if len(candidates) != 1:
+        raise ValueError("CMake must identify exactly one configured C++ compiler")
+    text = candidates[0].read_text(encoding="utf-8")
+    fields = {}
+    for key in ("CMAKE_CXX_COMPILER_ID", "CMAKE_CXX_COMPILER_VERSION", "CMAKE_CXX_COMPILER"):
+        match = re.search(r'^set\(' + key + r' "([^"]+)"\)', text, re.MULTILINE)
+        if not match:
+            raise ValueError("missing CMake compiler identity: " + key)
+        fields[key] = match[1]
+    return fields
+
+
 def build(root, target, language=None, cross=False):
     root = Path(root).resolve()
     config = load_config(root, initialized=True, repository=os.environ.get("GITHUB_REPOSITORY"))
@@ -131,6 +145,8 @@ def build(root, target, language=None, cross=False):
         ]
     for command in commands:
         subprocess.run(command, cwd=source, env=env, check=True, timeout=600)
+    if selected == "cpp":
+        toolchain = cmake_compiler_identity(output / "cmake")
     if target == native:
         if selected == "go":
             subprocess.run(["go", "test", "./..."], cwd=source, env=env, check=True, timeout=600)
@@ -157,7 +173,14 @@ def build(root, target, language=None, cross=False):
         if not contract.is_file():
             raise ValueError("tests/cli-contract.json is required; define feature smoke vectors")
         smoke_test(executable, config["version"], contract)
-    record(root, target, executable, target == native, toolchain)
+    dependencies = None
+    if selected == "cpp":
+        from native_dependencies import inspect
+        dependencies = inspect(executable, target, toolchain)
+    status = record(root, target, executable, target == native, toolchain)
+    if dependencies is not None:
+        status["native_dependencies"] = dependencies
+        executable.with_name("build-manifest.json").write_text(json.dumps(status, indent=2) + "\n")
     return executable
 
 

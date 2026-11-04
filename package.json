@@ -1,8 +1,8 @@
 {
-  "name": "4d-component-template",
+  "name": "spooler-monitor",
   "version": "0.1.0",
   "private": true,
-  "description": "Deterministic UTF-8 greeting example",
+  "description": "Read local printer queue status and explicitly pause or resume queue processing on macOS and Windows",
   "license": "MIT",
   "tool": {
     "platform": "macos",

@@ -1,207 +1,218 @@
+"""Printer-independent native CLI contract tests; no live queue mutations."""
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[1]
-STARTERS = ROOT / "cli-starters"
-ERROR = (
-    b'{"protocol":1,"error":{"code":"invalid_arguments","message":'
-    b'"expected greet --name <non-empty UTF-8 name> or --version"}}\n'
+USAGE = (
+    "expected list, get|pause|resume <queueID>, capabilities, "
+    "inspect-argument <text>, or --version"
 )
+QUEUE = "世界 queue"
 
 
-def json_line(value):
-    return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-
-
-class ContractTests:
+class CppCLI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        selected = os.environ.get("TEST_CLI_LANGUAGE")
-        if selected not in (None, "none", "go", "rust", "cpp"):
-            raise RuntimeError("TEST_CLI_LANGUAGE must be none, go, rust, or cpp")
-        if selected == "none":
-            raise unittest.SkipTest("CLI toolchains disabled by TEST_CLI_LANGUAGE=none")
-        if selected is not None and selected != cls.language:
-            raise unittest.SkipTest("TEST_CLI_LANGUAGE selects " + selected)
-
-        config_path = ROOT / "template.json"
-        config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
-        initialized = config.get("initialized", False) or (ROOT / "cli").is_dir()
-        if initialized:
-            configured = config.get("language")
-            if configured not in ("go", "rust", "cpp"):
-                raise RuntimeError("initialized template.json must configure a CLI language")
-            if configured != cls.language:
-                if selected is not None:
-                    raise RuntimeError(
-                        "TEST_CLI_LANGUAGE selects " + selected
-                        + " but template.json configures " + configured
-                    )
-                raise unittest.SkipTest("initialized template selects " + configured)
-            original = ROOT / "cli"
-            executable_name = config["cli"]
-        else:
-            original = STARTERS / cls.language
-            executable_name = "component-cli"
-        if not original.is_dir():
-            raise RuntimeError("missing CLI source directory: " + str(original))
-
-        def unavailable(message):
-            if selected is not None:
-                raise RuntimeError("selected " + cls.language + " toolchain unavailable: " + message)
-            raise unittest.SkipTest("unavailable toolchain: " + message)
-
-        missing = [tool for tool in cls.tools if shutil.which(tool) is None]
-        if missing:
-            unavailable(", ".join(missing))
-        compiler = None
-        if cls.language == "cpp" and os.name != "nt":
-            compiler = next(
-                (shutil.which(tool) for tool in ("c++", "g++", "clang++") if shutil.which(tool)),
-                None,
-            )
-            if compiler is None:
-                unavailable("C++17 compiler")
-        scratch = tempfile.TemporaryDirectory(prefix=".cli-test path ", dir=Path(__file__).parent)
-        cls.addClassCleanup(scratch.cleanup)
-        root = Path(scratch.name)
-        source = root / "source"
-        shutil.copytree(original, source)
-        environment = os.environ.copy()
-        executable_name += ".exe" if os.name == "nt" else ""
-        execution_directory = root / "executables with spaces"
-        execution_directory.mkdir()
-        cls.executable = execution_directory / executable_name
-        if cls.language == "go":
-            environment.pop("GOOS", None)
-            environment.pop("GOARCH", None)
-            environment["CGO_ENABLED"] = "0"
-            environment.update(
-                GOCACHE=str(root / "go-cache"),
-                GOPATH=str(root / "go-path"),
-                GOTOOLCHAIN="local",
-                GOPROXY="off",
-                GOSUMDB="off",
-            )
-            commands = [["go", "build", "-o", str(cls.executable), "."]]
-        elif cls.language == "rust":
-            environment.pop("CARGO_BUILD_TARGET", None)
-            environment["CARGO_TARGET_DIR"] = str(root / "target")
-            built_executable = root / "target" / "release" / executable_name
-            commands = [["cargo", "build", "--release", "--offline", "--locked"]]
-        else:
-            build = root / "build"
-            built_executable = build / executable_name
-            commands = [
-                ["cmake", "-S", str(source), "-B", str(build),
-                 "-DCMAKE_BUILD_TYPE=Release",
-                 *([] if os.name == "nt" else ["-DCMAKE_CXX_COMPILER=" + compiler]),
-                 *(["-A", "x64"] if os.name == "nt" else [])],
-                ["cmake", "--build", str(build), "--config", "Release"],
-            ]
+        language = os.environ.get("TEST_CLI_LANGUAGE")
+        if language == "none":
+            raise unittest.SkipTest("TEST_CLI_LANGUAGE=none")
+        if language not in (None, "cpp"):
+            raise RuntimeError("this repository selects cpp, not " + language)
+        if not shutil.which("cmake"):
+            raise RuntimeError("selected C++ toolchain requires cmake")
+        # Persistent ignored build directory: no external temporary files or caches.
+        cls.build = ROOT / "build" / "cli-python-tests path"
+        commands = [
+            ["cmake", "-S", str(ROOT / "cli"), "-B", str(cls.build),
+             "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=ON",
+             *(["-A", "x64"] if os.name == "nt" else [])],
+            ["cmake", "--build", str(cls.build), "--config", "Release"],
+            ["ctest", "--test-dir", str(cls.build), "-C", "Release", "--output-on-failure"],
+        ]
         for command in commands:
-            result = subprocess.run(
-                command, cwd=source, env=environment, capture_output=True, timeout=180
-            )
+            result = subprocess.run(command, capture_output=True, timeout=180, cwd=ROOT)
             if result.returncode:
                 raise RuntimeError(
-                    "build failed: " + repr(command) + "\n"
-                    + result.stdout.decode("utf-8", errors="replace")
-                    + result.stderr.decode("utf-8", errors="replace")
+                    repr(command) + "\n" +
+                    result.stdout.decode("utf-8", errors="replace") +
+                    result.stderr.decode("utf-8", errors="replace")
                 )
-        if cls.language == "cpp" and not built_executable.exists():
-            built_executable = build / "Release" / executable_name
-        if cls.language != "go":
-            shutil.copy2(built_executable, cls.executable)
+        suffix = ".exe" if os.name == "nt" else ""
+        binary_dir = cls.build / "Release" if (cls.build / "Release").is_dir() else cls.build
+        # Exercise an executable filename containing spaces and Unicode as well.
+        cls.executable = cls.build / ("CLI 世界 with spaces" + suffix)
+        shutil.copy2(binary_dir / ("spooler-monitor" + suffix), cls.executable)
+        cls.fixture = binary_dir / ("monitor_fixture" + suffix)
+        cls.backend = "winspool" if os.name == "nt" else "cups"
 
-    def assert_result(self, arguments, status, stdout, stderr):
-        result = subprocess.run(
-            [os.fspath(self.executable), *arguments], capture_output=True, timeout=10
-        )
-        self.assertEqual(result.returncode, status)
-        self.assertEqual(result.stdout, stdout)
-        self.assertEqual(result.stderr, stderr)
+    def run_cli(self, args, status=0, scenario=None):
+        command = [str(self.executable), *args] if scenario is None else [
+            str(self.fixture), scenario, *args
+        ]
+        result = subprocess.run(command, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, status, result.stderr)
+        stream = result.stdout if status == 0 else result.stderr
+        self.assertEqual(result.stderr if status == 0 else result.stdout, b"")
+        self.assertTrue(stream.endswith(b"\n"))
+        self.assertEqual(stream.count(b"\n"), 1)
+        value = json.loads(stream.decode("utf-8", errors="strict"))
+        # Enforce compact output framing, not just parseability.
+        self.assertEqual(stream, (
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8"))
+        self.assertIs(type(value["protocol"]), int)
+        self.assertEqual(value["protocol"], 1)
+        self.assertIs(value["ok"], status == 0)
+        if status:
+            error = value["error"]
+            self.assertEqual(set(error), {"code", "message", "backend", "nativeCode", "outcome"})
+            self.assertIsInstance(error["message"], str)
+            self.assertTrue(error["message"])
+            self.assertIn(error["backend"], (self.backend, None))
+            self.assertTrue(error["nativeCode"] is None or type(error["nativeCode"]) is int)
+            self.assertIn(error["outcome"], ("not_submitted", "rejected", "uncertain", "accepted"))
+        return value
 
     def test_version(self):
-        self.assert_result(["--version"], 0, b'{"protocol":1,"version":"0.1.0"}\n', b"")
+        self.assertEqual(self.run_cli(["--version"]), {
+            "protocol": 1, "ok": True, "operation": "version", "version": "0.1.0"
+        })
 
-    def test_name(self):
+    def test_capabilities(self):
+        self.assertEqual(self.run_cli(["capabilities"]), {
+            "protocol": 1, "ok": True, "operation": "capabilities", "backend": self.backend,
+            "operations": ["list", "get", "pause", "resume"], "mutationPolicy": "explicit-only"
+        })
+
+    def test_argument_roundtrips(self):
         self.assertIn(" ", str(self.executable))
-        name = '😀 "quoted" \\backslash; \'$()\''
-        self.assert_result(
-            ["greet", "--name", name], 0,
-            json_line({"protocol": 1, "message": "Hello, " + name + "!"}), b"",
-        )
-
-    def test_names(self):
-        names = [
-            "World", "two words", " ", " leading and trailing ",
-            "世界 café 😀", 'a"b\\c', "line\nbreak", "\t\r\b\f",
-            "".join(chr(value) for value in range(1, 32)),
+        values = [
+            "", " ", "two words", " leading and trailing ", "世界 café 😀",
+            'a"b\\c', "line\nbreak", "\t\r\b\f",
+            "".join(chr(c) for c in range(1, 32)),
             "<>&/\u2028\u2029", "\u007f\u0080\u07ff\u0800\uffff\U0010ffff",
-            "--version", "$(echo not-executed); `echo nope`",
+            "--version", "$(echo not-executed); `echo nope`", "x" * 16384,
         ]
-        for name in names:
-            with self.subTest(name=name):
-                self.assert_result(
-                    ["greet", "--name", name], 0,
-                    json_line({"protocol": 1, "message": "Hello, " + name + "!"}), b"",
-                )
+        for literal in values:
+            with self.subTest(literal=literal[:50]):
+                self.assertEqual(self.run_cli(["inspect-argument", literal]), {
+                    "protocol": 1, "ok": True, "operation": "inspect-argument", "argument": literal
+                })
 
     def test_invalid_arguments(self):
-        cases = [
-            [], [""], ["unknown"], ["greet"], ["greet", "--name"],
-            ["greet", "--name", ""], ["greet", "World"],
-            ["greet", "--name=World"], ["greet", "--unknown", "World"],
-            ["greet", "--name", "World", "--name", "Again"],
-            ["greet", "--name", "World", "extra"],
-            ["--name", "World", "greet"], ["greet", "--version"],
-            ["--version", "extra"], ["--version", "--version"],
-            ["greet", "--name", "World", "--version"],
-            ["GREET", "--name", "World"], ["greet", "--Name", "World"],
+        values = [
+            [], [""], ["unknown"], ["greet", "World"], ["list", "extra"],
+            ["get"], ["pause"], ["resume"], ["get", ""], ["get", "x\nb"],
+            ["get", "x\tb"], ["get", "\x7f"], ["get", "\u0085"],
+            ["get", "x" * 1025], ["pause", "x", "extra"],
+            ["inspect-argument"], ["--version", "extra"], ["capabilities", "extra"],
+            ["LIST"], ["--help"], ["inspect-argument", "x" * 16385],
         ]
-        for arguments in cases:
-            with self.subTest(arguments=arguments):
-                self.assert_result(arguments, 2, b"", ERROR)
+        for args in values:
+            with self.subTest(args=[x[:50] for x in args]):
+                response = self.run_cli(args, 2)
+                self.assertEqual(response, {
+                    "protocol": 1, "ok": False, "operation": "arguments",
+                    "error": {"code": "invalid_arguments", "message": USAGE,
+                              "backend": None, "nativeCode": None, "outcome": "not_submitted"}
+                })
 
-    @unittest.skipUnless(os.name == "posix", "raw byte arguments require POSIX")
+    @unittest.skipUnless(os.name == "posix", "byte argv requires POSIX")
     def test_malformed_utf8(self):
-        malformed = [
+        for value in [
             b"\x80", b"\xff", b"\xc0\xaf", b"\xc1\xbf", b"\xc2",
             b"\xe2\x82", b"\xe2(\xa1", b"\xe0\x80\x80", b"\xed\xa0\x80",
             b"\xf0\x80\x80\x80", b"\xf4\x90\x80\x80", b"\xf5\x80\x80\x80",
-            b"\xf8\x88\x80\x80\x80", b"valid\xfe",
-        ]
-        for value in malformed:
-            for arguments in (
-                [b"greet", b"--name", value],
-                [value, b"--name", b"World"],
-                [b"greet", value, b"World"],
-                [b"--version", value],
-            ):
-                with self.subTest(arguments=arguments):
-                    self.assert_result(arguments, 2, b"", ERROR)
+        ]:
+            for args in ([b"inspect-argument", value], [value], [b"get", value]):
+                with self.subTest(args=args):
+                    self.assertEqual(self.run_cli(args, 2)["error"]["code"], "invalid_arguments")
 
+    def assert_queue(self, value):
+        self.assertEqual(set(value), {
+            "id", "displayName", "backend", "state", "acceptingJobs", "jobCount",
+            "reasons", "message", "observedAt", "raw"
+        })
+        self.assertEqual(value["id"], QUEUE)
+        self.assertEqual(value["backend"], self.backend)
+        self.assertEqual(value["displayName"], 'Mock "printer"')
+        self.assertIn(value["state"], ("idle", "processing", "stopped", "unknown"))
+        self.assertIs(value["acceptingJobs"], True)
+        self.assertEqual(value["jobCount"], 2)
+        self.assertRegex(value["observedAt"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(value["raw"], {"fixture": True})
 
-class GoCLI(ContractTests, unittest.TestCase):
-    language = "go"
-    tools = ("go",)
+    def test_mock_list_get(self):
+        self.assertEqual(self.run_cli(["list"], scenario="empty")["queues"], [])
+        response = self.run_cli(["list"], scenario="one")
+        self.assertEqual(len(response["queues"]), 1)
+        self.assert_queue(response["queues"][0])
+        response = self.run_cli(["get", QUEUE], scenario="one")
+        self.assert_queue(response["queue"])
+        self.assertNotIn("mutation", response)
 
+    def test_mock_explicit_mutations(self):
+        for op, state in (("pause", "stopped"), ("resume", "idle")):
+            response = self.run_cli([op, QUEUE], scenario="one")
+            self.assertEqual(response["operation"], op)
+            self.assertEqual(response["mutation"], {
+                "accepted": True, "outcome": "accepted", "observation": "succeeded", "error": None
+            })
+            self.assert_queue(response["queue"])
+            self.assertEqual(response["queue"]["state"], state)
 
-class RustCLI(ContractTests, unittest.TestCase):
-    language = "rust"
-    tools = ("cargo", "rustc")
+    def test_mock_failures(self):
+        for scenario, status, code in [
+            ("denied", 4, "access_denied"), ("unavailable", 5, "backend_unavailable"),
+            ("unsupported", 6, "unsupported_operation"), ("native-error", 8, "native_error")
+        ]:
+            response = self.run_cli(["pause", QUEUE], status, scenario)
+            self.assertEqual(response["error"]["code"], code)
+            self.assertIs(response["mutation"]["accepted"], False)
+            self.assertEqual(response["error"]["outcome"],
+                             "not_submitted" if scenario == "unavailable" else "rejected")
+        response = self.run_cli(["get", QUEUE], 3, "get-failed")
+        self.assertEqual(response["error"]["code"], "unknown_queue")
+        self.assertNotIn("mutation", response)
+        for op in ("get", "pause", "resume"):
+            response = self.run_cli([op, "\\\\arbitrary-server\\queue"], 3, "one")
+            self.assertEqual(response["error"]["outcome"], "not_submitted")
 
+    def test_mock_accepted_observation_failure(self):
+        for scenario in ("observation-failed", "unexpected"):
+            response = self.run_cli(["pause", QUEUE], 7, scenario)
+            self.assertEqual(response["error"]["code"], "observation_failed")
+            self.assertEqual(response["error"]["outcome"], "accepted")
+            self.assertIs(response["queue"], None)
+            self.assertEqual(response["mutation"], {
+                "accepted": True, "outcome": "accepted", "observation": "failed",
+                "error": response["error"]
+            })
 
-class CppCLI(ContractTests, unittest.TestCase):
-    language = "cpp"
-    tools = ("cmake",)
+    def test_mock_transport_uncertainty(self):
+        response = self.run_cli(["pause", QUEUE], 5, "transport")
+        self.assertEqual(response["error"]["outcome"], "uncertain")
+        self.assertEqual(response["mutation"]["outcome"], "uncertain")
+        self.assertNotIn("queue", response)
+
+    def test_registered_contract(self):
+        contract = json.loads((ROOT / "tests" / "cli-contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(contract["schema"], 1)
+        for case in contract["cases"]:
+            with self.subTest(args=case["args"]):
+                result = subprocess.run([str(self.executable), *case["args"]],
+                                        capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, case["exitCode"])
+                for stream in ("stdout", "stderr"):
+                    expected = case[stream]
+                    if isinstance(expected, dict):
+                        expected = json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+                        expected = expected.replace("$VERSION", "0.1.0") + "\n"
+                    self.assertEqual(getattr(result, stream), expected.encode("utf-8"))
 
 
 if __name__ == "__main__":
