@@ -37,7 +37,13 @@ def command(args, *, timeout=120):
     except (OSError, subprocess.SubprocessError):
         raise ValueError(f"{Path(args[0]).name} could not complete") from None
     if result.returncode:
-        raise ValueError(f"{Path(args[0]).name} failed (exit {result.returncode})")
+        tool = Path(args[0]).name
+        diagnostic = ""
+        operation = ""
+        if tool in {"codesign", "spctl", "otool", "lipo"}:
+            diagnostic = ": " + result.stderr.strip()
+            operation = " " + args[1]
+        raise ValueError(f"{tool}{operation} failed (exit {result.returncode}){diagnostic}")
     return result.stdout + result.stderr
 
 
