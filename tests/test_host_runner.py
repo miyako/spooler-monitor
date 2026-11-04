@@ -17,13 +17,39 @@ CONTRACT = json.loads((ROOT / "tests/host/contract.json").read_text(encoding="ut
 
 
 def valid_status(compiled=False):
+    def success(payload):
+        return {"ok": True, "stdout": json.dumps(payload, separators=(",", ":")) + "\n",
+                "stderr": "", "exitCode": 0, "value": payload}
+
+    capabilities = success({"protocol": 1, "ok": True, "operation": "capabilities",
+                            "backend": "cups", "operations": ["list", "get", "pause", "resume"],
+                            "mutationPolicy": "explicit-only"})
+    version = success({"protocol": 1, "ok": True, "operation": "version", "version": "0.1.0"})
+    feature = CONTRACT["feature"]
+    if "cases" in feature:
+        cases = [{"ok": True, **copy.deepcopy(case)} for case in feature["cases"]]
+    else:
+        samples = [capabilities, version]
+        cases = [copy.deepcopy(samples[index % len(samples)])
+                 for index in range(feature["caseCount"])]
     status = {"success": True, "finished": True, "compiled": compiled,
-              "cases": [{"ok": True, **copy.deepcopy(case)} for case in CONTRACT["feature"]["cases"]],
-              "fileArgument": {"ok": True, "stdout": "file round trip", "stderr": "", "exitCode": 0},
-              "folderArgument": {"ok": True, "stdout": "folder round trip", "stderr": "", "exitCode": 0}}
+              "cases": cases, "capabilities": capabilities, "version": version,
+              "readOnlyMode": "success",
+              "readOnly": success({"protocol": 1, "ok": True, "operation": "list", "queues": []}),
+              "longQueue": success({"protocol": 1, "ok": True, "operation": "get",
+                                    "queue": {"id": "x" * 256, "displayName": "Fixture", "backend": "cups",
+                                              "state": "idle", "acceptingJobs": True, "jobCount": 0,
+                                              "reasons": [], "message": None,
+                                              "observedAt": "2026-11-04T00:00:00Z", "raw": {}}}),
+              "fileArgument": success({"protocol": 1, "ok": True, "operation": "inspect-argument",
+                                       "argument": "file round trip"}),
+              "folderArgument": success({"protocol": 1, "ok": True, "operation": "inspect-argument",
+                                         "argument": "folder round trip"})}
+    status["longQueue"]["queue"] = copy.deepcopy(status["longQueue"]["value"]["queue"])
     def apply_assertions(value, assertions):
         for assertion in assertions:
-            tokens = assertion["path"].split("/")[1:]
+            tokens = [token.replace("~1", "/").replace("~0", "~")
+                      for token in assertion["path"].split("/")[1:]]
             if not tokens:
                 if "equals" in assertion:
                     value = copy.deepcopy(assertion["equals"])
@@ -99,12 +125,21 @@ class ContractTests(unittest.TestCase):
             del status["cases"][0][key]
             with self.subTest(key=key), self.assertRaises(ValueError):
                 runner.validate_status(status, CONTRACT, False)
+
         for key, value in (("ok", 1), ("ok", False), ("stdout", ""), ("stdout", None),
                            ("stderr", None), ("exitCode", False), ("exitCode", 2), ("value", None)):
             status = valid_status()
             status["cases"][0][key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 runner.validate_status(status, CONTRACT, False)
+
+    def test_native_queue_id_above_legacy_character_limit_is_retained(self):
+        status = valid_status()
+        self.assertEqual(len(status["longQueue"]["value"]["queue"]["id"]), 256)
+        runner.validate_status(status, CONTRACT, False)
+        status["longQueue"]["value"]["queue"]["id"] = "x" * 255
+        with self.assertRaisesRegex(ValueError, "pattern mismatch"):
+            runner.validate_status(status, CONTRACT, False)
 
     def test_cases_must_match_all_contract_expectations(self):
         for cases in ([], None, {}, valid_status()["cases"][:-1], valid_status()["cases"] + [{}]):
@@ -164,21 +199,66 @@ class ContractTests(unittest.TestCase):
                 runner.validate_status(status, CONTRACT, False)
 
     def test_malformed_boolean_protocol_results_require_error_and_retained_status(self):
-        for index in range(2):
+        for index in (1, 2):
             for key in ("ok", "stdout", "stderr", "exitCode", "error"):
                 status = valid_status()
-                del status["protocolTypes"][index][key]
+                del status["protocolInvalid"][index][key]
                 with self.subTest(index=index, key=key), self.assertRaises(ValueError):
                     runner.validate_status(status, CONTRACT, False)
             status = valid_status()
-            status["protocolTypes"][index]["value"] = {"protocol": True}
+            status["protocolInvalid"][index]["value"] = {"protocol": True}
             with self.assertRaises(ValueError):
                 runner.validate_status(status, CONTRACT, False)
 
     def test_malformed_null_and_scalar_payloads_cannot_be_success_shaped(self):
-        for path in ("/protocolNull", *(f"/protocolScalars/{index}" for index in range(5))):
+        for path in (f"/protocolInvalid/{index}" for index in range(3, 9)):
             status = valid_status()
             runner._pointer(status, path)["ok"] = True
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                runner.validate_status(status, CONTRACT, False)
+            for key in ("stdout", "stderr", "exitCode", "error"):
+                status = valid_status()
+                del runner._pointer(status, path)[key]
+                with self.subTest(path=path, key=key), self.assertRaises(ValueError):
+                    runner.validate_status(status, CONTRACT, False)
+
+    def test_synthetic_schema_failures_require_failure_without_decoded_value(self):
+        for field in ("schemaInvalid", "errorSchemaInvalid", "mutationInvalid", "mutationQueueInvalid",
+                      "malformedMutation", "mutationErrorMismatch"):
+            for index in range(len(valid_status()[field])):
+                for change in ("ok", "value", "code"):
+                    status = valid_status()
+                    result = status[field][index]
+                    if change == "ok":
+                        result["ok"] = True
+                    elif change == "value":
+                        result["value"] = {"ok": True}
+                    else:
+                        result["error"]["code"] = "cli_error"
+                    with self.subTest(field=field, index=index, change=change), self.assertRaises(ValueError):
+                        runner.validate_status(status, CONTRACT, False)
+
+    def test_accepted_mutation_and_transport_outcomes_cannot_be_flattened(self):
+        for path, replacement in (
+                ("/acceptedFailure/ok", True),
+                ("/acceptedFailure/error/outcome", "rejected"),
+                ("/acceptedFailure/mutation/accepted", False),
+                ("/acceptedFailure/mutation/observation", "succeeded"),
+                ("/acceptedFailure/queue", {}),
+                ("/rejectedMutations/0/mutation/accepted", True),
+                ("/rejectedMutations/1/mutation/outcome", "accepted"),
+                ("/rejectedMutations/2/error/outcome", "rejected"),
+                ("/rejectedMutations/3/error/code", "native_error"),
+                ("/rejectedMutations/4/exitCode", 8),
+                ("/malformedMutation/0/error/outcome", "not_submitted"),
+                ("/malformedMutation/1/error/outcome", "rejected"),
+                ("/transport/0/error/outcome", "uncertain"),
+                ("/transport/1/error/outcome", "not_submitted"),
+                ("/transport/2/error/outcome", "not_submitted"),
+                ("/nativeError/error/nativeCode", True)):
+            status = valid_status()
+            parent, key = path.rsplit("/", 1)
+            runner._pointer(status, parent)[key] = replacement
             with self.subTest(path=path), self.assertRaises(ValueError):
                 runner.validate_status(status, CONTRACT, False)
 
@@ -203,6 +283,20 @@ class ContractTests(unittest.TestCase):
         status["converted"] = [{"ok": True, **contract["feature"]["cases"][0]}]
         status["invalidDocument"] = {"ok": False, "exitCode": 3, "error": {"code": "invalid_document"}}
         runner.validate_status(status, contract, False)
+        contract["feature"]["cases"][0].pop("value")
+        with self.assertRaisesRegex(ValueError, "require stdout, stderr, exitCode and value"):
+            runner.validate_status(status, contract, False)
+
+    def test_synthetic_fixture_supports_exact_as_well_as_semantic_cases(self):
+        contract = copy.deepcopy(CONTRACT)
+        contract["feature"] = {
+            "casesPath": "/cases",
+            "cases": [{"stdout": "converted\n", "stderr": "", "exitCode": 0, "value": {"pages": 4}}],
+            "assertions": [{"path": "/invalidDocument/ok", "equals": False}]}
+        with patch.dict(globals(), CONTRACT=contract):
+            status = valid_status()
+        self.assertEqual(len(status["cases"]), 1)
+        runner.validate_status(status, contract, False)
 
     def test_contract_malformed_and_empty_sections_fail_closed(self):
         for mutation in (
@@ -210,7 +304,9 @@ class ContractTests(unittest.TestCase):
                 lambda c: c["feature"].update(cases=[]),
                 lambda c: c["feature"].update(assertions=[]),
                 lambda c: c["execution"].update(assertions=[]),
-                lambda c: c["feature"]["cases"][0].pop("value"),
+                lambda c: c["feature"].update(caseCount=0),
+                lambda c: c["feature"].update(caseCount=True),
+                lambda c: c["feature"].update(caseAssertions=[]),
                 lambda c: c["execution"].update(successPaths=None),
                 lambda c: c["execution"]["assertions"].append({"path": "/success", "equal": True})):
             contract = copy.deepcopy(CONTRACT)

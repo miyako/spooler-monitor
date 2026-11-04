@@ -2,6 +2,6 @@
 <preferences stamp="4">
   <com.4d>
     <compiler><options syntax_file="true"/></compiler>
-    <general component_classStore_name="TemplateCLI"/>
+    <general component_classStore_name="SpoolerMonitor"/>
   </com.4d>
 </preferences>

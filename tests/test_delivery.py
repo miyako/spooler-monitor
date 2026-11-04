@@ -20,8 +20,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import build_cli
 import ci_config
 import package_component
+import native_dependencies
 from compile_component import input_digest, output_digest
-from build_provenance import record
+from build_provenance import record, source_digest
 
 
 def synthetic_universal():
@@ -444,6 +445,64 @@ class DeliveryTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "or newer"):
                         build_cli.require_toolchain(language)
 
+    def test_cpp_manifest_uses_actual_cmake_compiler_version(self):
+        directory = self.root / "cmake/CMakeFiles/4.0"
+        directory.mkdir(parents=True)
+        identity = directory / "CMakeCXXCompiler.cmake"
+        identity.write_text('set(CMAKE_CXX_COMPILER "/native/bin/c++")\n'
+                            'set(CMAKE_CXX_COMPILER_ID "AppleClang")\n'
+                            'set(CMAKE_CXX_COMPILER_VERSION "21.0.0")\n')
+        metadata = build_cli.cmake_compiler_identity(self.root / "cmake")
+        self.assertEqual(metadata["CMAKE_CXX_COMPILER_VERSION"], "21.0.0")
+        self.assertEqual(metadata["CMAKE_CXX_COMPILER_ID"], "AppleClang")
+        identity.write_text('set(CMAKE_CXX_COMPILER_ID "AppleClang")\n')
+        with self.assertRaisesRegex(ValueError, "missing CMake compiler identity"):
+            build_cli.cmake_compiler_identity(self.root / "cmake")
+
+    def test_native_provenance_binds_smoke_vectors_and_build_recipe(self):
+        baseline = source_digest(self.root)
+        contract = self.root / "tests/cli-contract.json"
+        contract.parent.mkdir()
+        contract.write_text('{"schema":1,"cases":[]}\n')
+        with_contract = source_digest(self.root)
+        self.assertNotEqual(baseline, with_contract)
+        recipe = self.root / "scripts/build_cli.py"
+        recipe.parent.mkdir()
+        recipe.write_text("# build recipe\n")
+        self.assertNotEqual(with_contract, source_digest(self.root))
+
+    def test_windows_dependency_audit_rejects_unbundled_vc_dlls(self):
+        expected = ["KERNEL32.dll", "WINSPOOL.DRV", "api-ms-win-core-synch-l1-2-0.dll"]
+        self.assertEqual(native_dependencies.validate_windows_imports(expected), expected)
+        for imports in ([], None, [123], ["VCRUNTIME140.dll"], ["MSVCP140.dll"], ["custom.dll"]):
+            with self.subTest(imports=imports), self.assertRaisesRegex(ValueError, "import inventory"):
+                native_dependencies.validate_windows_imports(imports)
+
+    def test_native_dependency_audit_uses_actual_tools_and_rejects_custom_dylibs(self):
+        executable = self.root / "example-cli"
+        for library, accepted in (("/usr/lib/libcups.2.dylib", True),
+                                  ("/opt/homebrew/lib/custom.dylib", False)):
+            result = subprocess.CompletedProcess([], 0,
+                str(executable) + ":\n\t" + library + " (compatibility version 2.0.0, current version 2.0.0)\n")
+            with patch.object(native_dependencies.subprocess, "run", return_value=result) as run:
+                if accepted:
+                    self.assertEqual(native_dependencies.inspect(executable, "macos-arm64", {}),
+                                     [library])
+                else:
+                    with self.assertRaisesRegex(ValueError, "non-system macOS"):
+                        native_dependencies.inspect(executable, "macos-arm64", {})
+                self.assertEqual(run.call_args.args[0], ["otool", "-L", str(executable)])
+        compiler = self.root / "msvc/cl.exe"
+        compiler.parent.mkdir()
+        dumpbin = compiler.with_name("dumpbin.exe")
+        dumpbin.write_bytes(b"synthetic tool; never executed")
+        with patch.object(native_dependencies.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, "Image dependencies:\n    KERNEL32.dll\n    WINSPOOL.DRV\n")) as run:
+            self.assertEqual(native_dependencies.inspect(
+                executable, "windows-x64", {"CMAKE_CXX_COMPILER": str(compiler)}),
+                ["KERNEL32.dll", "WINSPOOL.DRV"])
+            self.assertEqual(run.call_args.args[0], [str(dumpbin), "/DEPENDENTS", str(executable)])
+
     def test_release_requires_opt_in(self):
         environment = {
             "GITHUB_REPOSITORY": "owner/example-component", "GITHUB_REF_NAME": "v0.1.0",
@@ -471,16 +530,49 @@ class DeliveryTests(unittest.TestCase):
             archive.writestr(info, data)
         return output.getvalue()
 
-    def download(self, data, digest=None):
+    def download(self, data, digest=None, final_url="https://resources-download.4d.com/fixed/tool4d.zip"):
         response = io.BytesIO(data)
-        response.geturl = lambda: "https://resources-download.4d.com/fixed/tool4d.zip"
+        response.geturl = lambda: final_url
         environment = {
             "TOOL4D_URL": "https://resources-download.4d.com/fixed/tool4d.zip",
             "TOOL4D_SHA256": digest or hashlib.sha256(data).hexdigest(),
         }
         with patch.dict(os.environ, environment, clear=True), patch.object(
-                ci_config.urllib.request, "urlopen", return_value=response):
+                ci_config.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = response
             return ci_config.download_tool4d(self.root)
+
+    def test_pinned_vendor_cdn_redirect_retains_hash_gate(self):
+        data = self.archive_bytes("tool4d.app/Contents/MacOS/tool4d")
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            self.download(data, "0" * 64, "https://builds2.4d.com/fixed.tar.xz")
+        executable = self.download(data, final_url="https://builds2.4d.com/fixed.tar.xz")
+        self.assertEqual(executable.read_bytes(), b"tool4d")
+
+    def test_every_download_redirect_rejects_unapproved_hosts_and_http(self):
+        handler = ci_config.ToolDownloadRedirect()
+        request = ci_config.urllib.request.Request(
+            "https://resources-download.4d.com/fixed/tool4d.tar.xz")
+        approved = handler.redirect_request(
+            request, None, 302, "Found", {}, "https://builds2.4d.com/fixed.tar.xz")
+        self.assertEqual(approved.full_url, "https://builds2.4d.com/fixed.tar.xz")
+        for target in ("http://builds2.4d.com/fixed", "https://evil.example/fixed",
+                       "https://builds2.4d.com.evil.example/fixed",
+                       "https://user:password@builds2.4d.com/fixed",
+                       "https://builds2.4d.com:444/fixed"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "approved vendor HTTPS"):
+                handler.redirect_request(request, None, 302, "Found", {}, target)
+        poisoned = ci_config.urllib.request.Request("http://builds2.4d.com/fixed")
+        with self.assertRaisesRegex(ValueError, "approved vendor HTTPS"):
+            handler.redirect_request(poisoned, None, 302, "Found", {}, request.full_url)
+
+    def test_final_download_origin_is_checked_before_extracting(self):
+        data = self.archive_bytes("tool4d.app/Contents/MacOS/tool4d")
+        for url in ("http://builds2.4d.com/fixed", "https://evil.example/fixed"):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "approved vendor HTTPS"):
+                self.download(data, final_url=url)
+            self.assertFalse((self.root / ".tools/tool4d.app").exists())
+            self.assertFalse((self.root / ".tools/tool4d.download").exists())
 
     def test_verified_tool4d_download_and_permissions(self):
         executable = self.download(self.archive_bytes("tool4d.app/Contents/MacOS/tool4d"))

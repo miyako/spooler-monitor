@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 
 from build_cli import build, native_target, smoke_test
-from build_provenance import commit, sha256
+from build_provenance import commit, sha256, source_digest, verify
 from ci_config import ROOT, TARGETS, assemble, load_config, require_tool4d_host
 from compile_component import compile_component
 from doctor import doctor
@@ -26,11 +27,21 @@ def accept(root, repository, tool4d, cross=False):
     names = ["unit", "icons", *("cli_build_" + target for target in TARGETS),
              *("cli_test_" + target for target in TARGETS), "cli_rosetta",
              "dependencies", "assembly", "source_host", "compile", "package", "compiled_host",
-             "hosted_cli", "native_intel_4d", "windows_4d", "release_download", "signing"]
+             "hosted_cli", "native_intel_4d", "windows_4d", "release_download", "signing",
+             "live_mutations", "physical_printing"]
     report = {"schema": 1, "scope": "local", "release_ready": False, "result": "partial",
               "started_at": datetime.now(timezone.utc).isoformat(),
               "finished": False, "commit": commit(root), "steps": {name: {"status": "not_run", "reason": "not exercised"}
                                                for name in names}}
+    for name, reason in {
+        "native_intel_4d": "local tool4d runtime is macOS ARM64 only",
+        "windows_4d": "native Windows 4D runtime unavailable on this host",
+        "release_download": "no release publication or dependency-manager download authorized",
+        "signing": "unsigned local artifact; signing/notarization not requested",
+        "live_mutations": "not authorized to pause/resume real printer queues; mocked controls only",
+        "physical_printing": "not submitted or claimed; outside queue-control API scope",
+    }.items():
+        report["steps"][name]["reason"] = reason
     def save():
         output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     def step(name, action):
@@ -46,6 +57,7 @@ def accept(root, repository, tool4d, cross=False):
     try:
         config = load_config(root, initialized=True, repository=repository)
         report["configuration"] = config
+        report["source_sha256"] = source_digest(root)
         report["doctor"] = doctor(root, tool4d)
         require_tool4d_host()
         if not Path(tool4d).is_file():
@@ -56,6 +68,8 @@ def accept(root, repository, tool4d, cross=False):
             raise ValueError("tool4d --version produced no version text; compiler identity is unverified")
         report["tool4d"] = {"version": version.stdout.strip(), "binary_sha256": sha256(tool4d)}
         native = native_target()
+        report["platform"] = {"target": native, "system": platform.platform(),
+                              "python": platform.python_version()}
         def run(arguments):
             environment = os.environ.copy()
             environment["TEST_CLI_LANGUAGE"] = config["language"]
@@ -78,6 +92,20 @@ def accept(root, repository, tool4d, cross=False):
                 report["steps"]["cli_rosetta"]["reason"] = "Rosetta unavailable: " + probe.stderr.decode("utf-8", errors="replace")
         # Existing manifests are accepted only when bound to current source and commit.
         step("assembly", lambda: assemble(root))
+        for target in TARGETS:
+            executable = root / "build" / target / (config["cli"] + (".exe" if target == "windows-x64" else ""))
+            manifest = verify(root, target, executable)
+            report["steps"]["cli_build_" + target] = {"status": "passed", "details": manifest}
+            if target != native:
+                report["steps"]["cli_test_" + target] = (
+                    {"status": "passed", "reason": "native CI execution recorded in verified same-revision artifact",
+                     "details": manifest} if manifest.get("execution") == "passed" else
+                    {"status": "not_run", "reason": "artifact has no native execution evidence"})
+        manifests = [report["steps"]["cli_build_" + target]["details"] for target in TARGETS]
+        if all(item.get("execution") == "passed" and item.get("ci", {}).get("GITHUB_RUN_ID")
+               for item in manifests):
+            report["steps"]["hosted_cli"] = {"status": "passed", "details": manifests}
+        save()
         component = root / "component" / config["repository"]
         validate_resources(component, config["cli"])
         def dependencies():
@@ -88,7 +116,16 @@ def accept(root, repository, tool4d, cross=False):
             extra = [item for item in dependencies if not item.startswith(("/usr/lib/", "/System/Library/"))]
             if extra:
                 raise ValueError("non-system macOS dependencies need explicit packaging/review: " + repr(extra))
-            return {"macOS": dependencies, "windows": "not inspected locally; verify native CI runtime/DLL dependencies"}
+            windows_manifest = verify(root, "windows-x64",
+                                      root / "build/windows-x64" / (config["cli"] + ".exe"))
+            windows_dependencies = windows_manifest.get("native_dependencies")
+            if config["language"] == "cpp":
+                from native_dependencies import validate_windows_imports
+                if not isinstance(windows_dependencies, list):
+                    raise ValueError("Windows C++ artifact lacks native dependency audit")
+                validate_windows_imports(windows_dependencies)
+            return {"macOS": dependencies, "windows": windows_dependencies,
+                    "windows_evidence": "verified native build manifest; no local Windows execution"}
         step("dependencies", dependencies)
         source = step("source_host", lambda: test_4d(root, tool4d))
         (output.parent / "source-host-status.json").write_text(json.dumps(source, indent=2) + "\n")

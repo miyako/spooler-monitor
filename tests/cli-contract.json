@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "cases": [
-    {"args": ["--version"], "exitCode": 0, "stdout": {"protocol": 1, "version": "$VERSION"}, "stderr": ""},
-    {"args": ["greet", "--name", "世界 café"], "exitCode": 0, "stdout": {"protocol": 1, "message": "Hello, 世界 café!"}, "stderr": ""},
-    {"args": ["greet", "--name", "quote\" slash\\\n"], "exitCode": 0, "stdout": {"protocol": 1, "message": "Hello, quote\" slash\\\n!"}, "stderr": ""},
-    {"args": ["greet", "--name", ""], "exitCode": 2, "stdout": "", "stderr": {"protocol": 1, "error": {"code": "invalid_arguments", "message": "expected greet --name <non-empty UTF-8 name> or --version"}}},
-    {"args": ["unknown"], "exitCode": 2, "stdout": "", "stderr": {"protocol": 1, "error": {"code": "invalid_arguments", "message": "expected greet --name <non-empty UTF-8 name> or --version"}}}
+    {"args": ["--version"], "exitCode": 0, "stdout": {"protocol": 1, "ok": true, "operation": "version", "version": "$VERSION"}, "stderr": ""},
+    {"args": ["inspect-argument", "世界 café"], "exitCode": 0, "stdout": {"protocol": 1, "ok": true, "operation": "inspect-argument", "argument": "世界 café"}, "stderr": ""},
+    {"args": ["inspect-argument", "quote\" slash\\\n"], "exitCode": 0, "stdout": {"protocol": 1, "ok": true, "operation": "inspect-argument", "argument": "quote\" slash\\\n"}, "stderr": ""},
+    {"args": ["get", ""], "exitCode": 2, "stdout": "", "stderr": {"protocol": 1, "ok": false, "operation": "arguments", "error": {"code": "invalid_arguments", "message": "expected list, get|pause|resume <queueID>, capabilities, inspect-argument <text>, or --version", "backend": null, "nativeCode": null, "outcome": "not_submitted"}}},
+    {"args": ["unknown"], "exitCode": 2, "stdout": "", "stderr": {"protocol": 1, "ok": false, "operation": "arguments", "error": {"code": "invalid_arguments", "message": "expected list, get|pause|resume <queueID>, capabilities, inspect-argument <text>, or --version", "backend": null, "nativeCode": null, "outcome": "not_submitted"}}}
   ]
 }
