@@ -45,8 +45,54 @@ scripts/tests. Resolve all paths below from the repository root, not this folder
    paths, `passed` / `failed` / `not_run` per check and blockers. Partial local success
    is **NOT release ready**. Do not publish or add credentials without approval.
    Unsigned free tool4d local compilation needs no license/signing secrets.
-   The current release workflow consumes none of the seven Apple secrets
-   documented in AGENTS.md; registering them does not enable signing.
+   For this destination, use the signed release contract below, not the
+   template's historical unsigned-release assumptions. Registering secrets is
+   not execution evidence.
+
+## spooler-monitor signed release contract
+
+The authorized `scripts/sign_release.py` integration in the existing
+`release.yml` uses `workflow_dispatch.validation_only`, Boolean default **true**.
+Validation builds the selected immutable `github.sha` with no existing tag or
+`FOURD_ENABLED` requirement and **cannot publish**. The production path remains
+an immutable existing matching version-tag build gated by `FOURD_ENABLED=true`,
+with tag re-verification before future authorized publication. Do not create
+tags, publish or merge in the current task.
+
+Six registered Actions secrets supply the base64 Developer ID Application P12
+including private key, its password, temporary keychain password and notary
+Apple ID/app-specific password/team: `APPLE_DEVELOPER_ID_CERTIFICATE`,
+`APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`NOTARYTOOL_APPLE_ID`, `NOTARYTOOL_PASSWORD`, `NOTARYTOOL_TEAM_ID`.
+No `CODESIGN_APPLE_ID` is required: derive exactly one imported valid Developer
+ID Application identity and verify its team. Delete the isolated temporary
+keychain on every exit, including failure; do not require local credentials.
+
+Require native same-ref matrix → validated assembly → real source host →
+compile with strict digest marker → unsigned intermediate package → separate
+staged compiled `.4dbase`. Sign only the universal macOS CLI and generated
+`Libraries` Mach-O dylib with hardened runtime, secure timestamp and no extra
+entitlements. Preserve `.4DZ`, Windows and all non-code resource bytes in the
+deterministic final `dist/spooler-monitor.zip`; never sign arbitrary resources.
+Leave source/build manifests and compile markers unchanged as pre-sign
+evidence; record signed hashes separately, never rewrite markers.
+
+Submit the final ZIP to `notarytool`, require **Accepted**, and strictly verify
+signature/team/timestamp/runtime for every architecture, separately for CLI
+and dylib. Online Gatekeeper CLI assessment requires actual tool support;
+unsupported or unexecuted checks are `not_run`, not passes. ZIP and bare
+CLI/dylib files cannot be stapled: use Apple online ticket lookup, with no
+offline stapled guarantee and no arbitrary DMG workaround.
+
+Test the exact final ZIP's unpacked component in a real compiled 4D host after
+signing. Bind final signed-byte inventory/report
+`dist/spooler-monitor.signing.json` to final ZIP SHA256, original unsigned ZIP
+SHA256 and native pre-sign manifests. Current signing/notary/Gatekeeper/final
+signed-host evidence is `not_run`, not a claimed successful submission.
+Generic unsigned local acceptance remains available without secrets and is
+not signed release acceptance. Intel/Windows 4D, live queue mutations and
+published dependency installation remain `not_run` without actual evidence.
+Follow [AGENTS.md](../../../AGENTS.md) for the full destination-specific rules.
 
 ## Discovery is supported, invocation is not guaranteed
 

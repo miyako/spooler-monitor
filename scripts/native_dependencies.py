@@ -22,6 +22,14 @@ def inspect(executable, target, compiler):
                                 capture_output=True, text=True, timeout=30)
         imports = [line.strip().split(" (", 1)[0] for line in result.stdout.splitlines()
                    if " (compatibility version " in line]
+        if Path(executable).suffix == ".dylib":
+            identity = subprocess.run(["otool", "-D", str(executable)], check=True,
+                                      capture_output=True, text=True, timeout=30)
+            names = identity.stdout.splitlines()[1:]
+            if len(names) != 1 or not names[0].strip():
+                raise ValueError("missing dylib install-name identity")
+            # otool -L includes LC_ID_DYLIB as well as actual imports.
+            imports = [name for name in imports if name != names[0].strip()]
         if not imports or any(not name.startswith(("/usr/lib/", "/System/Library/")) for name in imports):
             raise ValueError("unbundled non-system macOS native dependency: " + repr(imports))
         return imports

@@ -99,8 +99,7 @@ def assemble(root=ROOT):
               for target in TARGETS]
     if not all(path.is_file() and not path.is_symlink() for path in inputs):
         raise ValueError("all three native build artifacts are required")
-    for target, path in zip(TARGETS, inputs):
-        verify(root, target, path)
+    manifests = {target: verify(root, target, path) for target, path in zip(TARGETS, inputs)}
     mac.parent.mkdir(parents=True, exist_ok=True)
     windows.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["lipo", "-create", str(inputs[0]), str(inputs[1]), "-output", str(mac)], check=True)
@@ -108,6 +107,13 @@ def assemble(root=ROOT):
     mac.chmod(0o755)
     shutil.copyfile(inputs[2], windows)
     windows.chmod(0o755)
+    from build_provenance import commit, sha256, source_digest
+    (destination / "assembly-manifest.json").write_text(json.dumps({
+        "schema": 1, "phase": "pre-sign", "commit": commit(root),
+        "source_sha256": source_digest(root), "native": manifests,
+        "resources": {path.relative_to(destination).as_posix(): sha256(path)
+                      for path in (mac, windows)},
+    }, indent=2) + "\n", encoding="utf-8")
     return destination
 
 

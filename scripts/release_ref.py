@@ -7,7 +7,8 @@ import re
 import subprocess
 import sys
 
-from ci_config import ROOT, SEMVER
+from ci_config import ROOT, SEMVER, load_config
+from build_provenance import commit
 
 
 def validate_tag(tag):
@@ -53,6 +54,16 @@ def resolve(root, *, event, ref_type="", ref_name="", version_tag="", event_sha=
     return {"tag": tag, "sha": sha}
 
 
+def validation(root, *, event, event_sha):
+    if event != "workflow_dispatch":
+        raise ValueError("signed validation requires explicit workflow_dispatch authorization")
+    if (not isinstance(event_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", event_sha)
+            or commit(root) != event_sha):
+        raise ValueError("validation must use the exact checked-out event commit")
+    config = load_config(root, initialized=True, repository=os.environ.get("GITHUB_REPOSITORY"))
+    return {"tag": "v" + config["version"], "sha": event_sha, "validation_only": "true"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -66,15 +77,21 @@ def main():
     verifier = commands.add_parser("verify")
     verifier.add_argument("--tag", required=True)
     verifier.add_argument("--expected-sha", required=True)
+    validator = commands.add_parser("validation")
+    validator.add_argument("--event", required=True)
+    validator.add_argument("--event-sha", required=True)
     args = parser.parse_args()
     try:
         if args.command == "verify":
             verify(args.root, args.tag, args.expected_sha)
             print("Release tag still points to the expected commit.")
         else:
-            metadata = resolve(args.root, event=args.event, ref_type=args.ref_type,
-                               ref_name=args.ref_name, version_tag=args.version_tag,
-                               event_sha=args.event_sha)
+            if args.command == "validation":
+                metadata = validation(args.root, event=args.event, event_sha=args.event_sha)
+            else:
+                metadata = resolve(args.root, event=args.event, ref_type=args.ref_type,
+                                   ref_name=args.ref_name, version_tag=args.version_tag,
+                                   event_sha=args.event_sha)
             output = "".join(f"{key}={value}\n" for key, value in metadata.items())
             if os.environ.get("GITHUB_OUTPUT"):
                 with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:

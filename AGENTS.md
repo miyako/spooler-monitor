@@ -439,8 +439,11 @@ python3 scripts/test_4d.py --root . --tool4d .tools/tool4d.app/Contents/MacOS/to
 5. Test the **unpacked ZIP's** `.4dbase`, not the working source folder. The
    component must report `Is compiled mode=True`. A Python/CLI suite, successful
    compiler or archive structure check is not evidence of real host loading.
-6. Recompile/repack/retest after any input or signing change. Never accept a
-   stale `host-status.json` or result describing a different package.
+6. Recompile/repack/retest after any source/build input change. For the
+   destination's staged post-package signing, preserve the pre-sign compile
+   marker, record signed hashes separately and host-test the exact final ZIP
+   as specified in section 8. Never accept a stale `host-status.json` or result
+   describing a different package.
 
 The isolated host's `Host_error` method writes raw `Last errors`, the failing
 phase, `success:false` and `finished:false` on an unexpected runtime abort.
@@ -480,7 +483,14 @@ After the dispatch-capable workflow is merged to the **default branch**, open
 `FOURD_ENABLED` still controls optional hosted 4D steps; CLI-only green is not
 compiled-host green.
 
-**Actions → Release compiled component → Run workflow** requires
+For this destination, **Actions → Release compiled component → Run workflow**
+has Boolean `validation_only`, default **true**. Validation builds the selected
+immutable `github.sha` through the native matrix and signed-package checks,
+requires neither an existing version tag nor `FOURD_ENABLED`, and cannot
+publish. Section 8 defines the signed artifact gates; ordinary CI's optional
+4D switch does not disable this validation path.
+
+The production path (`validation_only:false` for dispatch) requires
 `version_tag`, an **already existing** `v<SemVer>` tag matching the initialized
 repository's `template.json.version` / `package.json.version`. It creates no
 tag. The gate resolves/peels that tag to a commit SHA, validates source at that
@@ -489,7 +499,8 @@ that exact SHA—not the selected UI branch. Packaging receives the normalized
 tag explicitly. Publication refreshes and verifies the tag has not moved, uses
 `--verify-tag`, and remains blocked by compilation or final host failure.
 Do not manually dispatch publication or create a tag without user permission.
-The new workflow is not available in the default template before its PR merges.
+This destination-specific contract supersedes the inherited unsigned release
+instructions; it does not authorize a dispatch, tag creation, publication or merge.
 
 ## 7. Report evidence, not assumptions
 
@@ -509,13 +520,14 @@ The helper's JSON statuses are strictly `passed` / `failed` / `not_run`.
 | ZIP/package integrity | Names, source stripping, modes, explicit directories, libraries | Not runtime loading |
 | Compiled 4D host | Unpacked artifact, fresh report, compiled mode true | Intel/Windows 4D remain separate checks |
 | Dependency-manager install | Actual published asset download/load | Manual local install is not this check |
-| Signing/notarization | Final signed artifact checks, Accepted notarization when enabled | Optional; normally `not_run`, unsigned stated clearly |
+| Signing/notarization | Final signed artifact checks and Accepted notarization | Required for this destination's signed pipeline; unsigned local checks remain separate |
 
 Summarize revision/input digest, language, tool versions/platform, exact commands,
 artifact/report paths and unvalidated checks. Never describe an Apple Silicon
 local package as fully cross-platform accepted. Partial acceptance is **NOT
-release ready**; publication requires all mandatory gates. Optional unsigned
-signing status alone is not a blocker for this unsigned pipeline.
+release ready**; publication requires all mandatory gates. Signing is not
+required for generic unsigned local acceptance, but is mandatory for this
+destination's signed release pipeline.
 Report the **actual** compiler used: Go **1.25.1** was available in the local
 November 1 observation, whereas **1.26.10** is the CI pin and the source minimum
 is 1.23. Do not relabel a local 1.25.1 build as a 1.26.10 build.
@@ -558,7 +570,8 @@ resources, compile fresh, and load the **exact final ZIP's** unpacked component.
 Report unsupported/unavailable checks as `not_run`; local success remains
 `release_ready:false`. Approved publication additionally requires the existing
 matching tag, all required native artifact/tests, hosted 4D opt-in and the final
-package-host gate. Signing is optional for the existing unsigned release.
+package-host gate plus the destination-specific signing/notarization gates in
+section 8. Generic local unsigned acceptance remains a separate path.
 
 The final handoff must identify the repository/namespace/class/CLI/language,
 revision and input provenance, exact commands/results, tool versions, stable ZIP
@@ -594,7 +607,7 @@ cross-build or optional skipped workflow as passed.
 | Tool download/checksum/config failure | Check `package.json.tool` or complete overrides, official fixed URL and independently approved SHA256; do not fall back to `latest`, bypass the hash or redistribute vendor tools. |
 | Final host unfinished/failed | Stop and preserve status/phase/errors. A previous ZIP, successful compile or six completed cases cannot approve this run. |
 
-## 8. Icons, licensing and optional signing
+## 8. Icons, licensing and destination signing
 
 Edit original `assets/icon-source.svg` within the supported rectangle/polygon
 renderer; regenerate **both** Resources icons. `logo.png` is real RGBA PNG and
@@ -615,27 +628,28 @@ Microsoft static-CRT redistribution terms for Windows C++. Additional DLLs,
 dylibs, statically linked dependencies and copied code need their own notices.
 Never claim this deterministic file-presence check is a legal audit.
 
-Signing is not a prerequisite for unsigned development/package acceptance.
-Gatekeeper/quarantine may still block unsigned downloads; do not add a runtime
-trust bypass. If the user explicitly opts into signing, store certificates and
-passwords in **secrets only**, use minimum entitlements, fail closed, require
-notarization `Accepted`, clean temporary keychains even on failure and test the
-final signed compiled package. Bare CLI executables cannot be stapled; a signed
-container/Apple `Contents/` layout requires deliberate packaging changes.
+### Destination-specific signed release contract
 
-### Seven Apple secrets: registration is not implementation
+Signing implementation is authorized for `miyako/spooler-monitor` through
+`scripts/sign_release.py` and the existing `.github/workflows/release.yml`.
+These destination instructions supersede the template's historical unsigned
+release/seven-secret guidance. They do **not** authorize publication, tag
+creation or merge in the current task. Production remains an immutable
+existing-tag path with `FOURD_ENABLED=true`; validation-only dispatch defaults
+to true, uses the selected immutable `github.sha`, needs no existing tag or
+`FOURD_ENABLED`, and cannot publish.
 
-The current `.github/workflows/release.yml` is **unsigned** and consumes **none**
-of these seven secrets. Merely registering them does **not** enable signing or
-notarization. Implementing a signing workflow is separate, explicitly approved
-scope; this playbook documents credential types, not an implemented integration.
-No secret below is required by the free local compiler or unsigned acceptance.
+Signing is not a prerequisite for the generic unsigned local
+development/package acceptance path or the free compiler. No local credentials
+are required. Gatekeeper/quarantine may still block unsigned downloads; never
+add a runtime trust bypass.
 
-For a future approved integration, register private values in the **destination**
-repository under **Settings → Secrets and variables → Actions → Secrets → New
-repository secret**. Template creation does not inherit repository secrets or
-variables. Never place certificates/private keys/passwords in source, workflow
-YAML, logs, package metadata or a PR.
+#### Six registered Actions secrets
+
+The six values below are already registered in this destination repository.
+Template creation does not inherit secrets or variables. Keep private values
+in Actions **Secrets** only; never place certificates/private keys/passwords
+in source, workflow YAML, logs, package metadata or a PR.
 
 | Repository Actions secret | Exact value/type |
 | --- | --- |
@@ -645,7 +659,61 @@ YAML, logs, package metadata or a PR.
 | `NOTARYTOOL_APPLE_ID` | The Apple account **email address** authorized to notarize for the Developer team. |
 | `NOTARYTOOL_TEAM_ID` | The Apple Developer **Team ID** for the signing identity and notarization account. |
 | `NOTARYTOOL_PASSWORD` | An Apple **app-specific password** for notarization, **not the normal Apple account login password**. |
-| `CODESIGN_APPLE_ID` | Despite the misleading name, the full **Developer ID Application signing identity**, such as `Developer ID Application: Organization (TEAMID)`, or its certificate **SHA-1 identity fingerprint**. **Not an email address.** |
+
+`CODESIGN_APPLE_ID` is **not required**. Import into an isolated temporary
+keychain, derive exactly one valid **Developer ID Application** signing
+identity with its private key, and verify its team against
+`NOTARYTOOL_TEAM_ID`. Reject missing, multiple, invalid or wrong-team
+identities rather than selecting an arbitrary identity from the host.
+Delete the temporary keychain on success and **every failure**, including
+partial setup/import, signing, notarization and verification failures. Do not
+use or export credentials from a developer's login keychain.
+
+#### Immutable inputs, staged signing and final-byte evidence
+
+1. Build/test all three native targets from the same immutable resolved ref.
+   Validate native pre-sign manifests during assembly; require real source
+   host execution, fresh real compilation and strict input/output digest
+   marker validation before packaging an unsigned intermediate.
+2. Unpack that intermediate into a **separate staged compiled `.4dbase`**.
+   Sign only the universal macOS CLI and the generated `Libraries` Mach-O
+   dylib, with hardened runtime and secure timestamp, **no extra
+   entitlements**. Do not sign `.4DZ` or arbitrary resources.
+3. Deterministically repack final `dist/spooler-monitor.zip`, preserving the
+   original `.4DZ` bytes, Windows executable bytes and every non-code resource,
+   explicit nested ZIP directory records and executable modes. Source/build
+   manifests and `compile-status.json` stay unchanged as **pre-sign**
+   provenance. Signed final hashes are separate; never rewrite a digest
+   marker or native manifest to bless modified signed output.
+4. Submit the **final ZIP** to `notarytool` and require `Accepted`, failing
+   closed on submission/rejection/verification errors. Strictly verify code
+   signatures, expected team, secure timestamp and hardened runtime on
+   **every architecture** of both Mach-O files. Report the CLI and dylib
+   signatures separately; CLI success is not dylib evidence.
+5. Perform online Gatekeeper CLI assessment only if the actual installed tool
+   supports that assessment. Record command/output and unsupported checks
+   truthfully as `not_run`; do not infer a Gatekeeper pass from `codesign` or
+   notary acceptance.
+6. Load the **exact final ZIP's unpacked component after signing** in a real
+   4D host and require fresh compiled-mode success. Do not substitute the
+   source tree, unsigned intermediate or earlier host report.
+7. Record final signed-byte inventory and report in
+   `dist/spooler-monitor.signing.json`, bound to the final ZIP SHA256,
+   original unsigned ZIP SHA256 and original native pre-sign manifests.
+   Preserve the report and final ZIP together; inspect actual evidence before
+   claiming any signing, notary, Gatekeeper or host check passed.
+
+ZIPs, bare CLI executables and dylibs cannot be stapled. This layout relies on
+Apple **online ticket lookup**, not an offline stapled guarantee. Do not invent
+an arbitrary DMG or claim an offline ticket is attached to these artifacts.
+
+Current signing, notarization, online Gatekeeper and exact final signed-ZIP
+host evidence is **`not_run`**; no successful notary submission is claimed by
+these instructions or by secret registration. Preserve distinct limitations:
+native Intel/Windows 4D loading, live queue mutations and published
+dependency-manager installation remain `not_run` unless actually executed.
+Unsigned local partial acceptance remains `release_ready:false` and cannot
+approve the signed production path.
 
 Keep public compiler pins/hosted opt-in under package metadata and Actions
 **Variables**, not Secrets. GitHub supplies the restricted publish job's
