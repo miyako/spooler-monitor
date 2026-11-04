@@ -23,11 +23,22 @@ FINGERPRINT = "A" * 40
 IDENTITY = f'  1) {FINGERPRINT} "Developer ID Application: Example ({TEAM})"\n'
 METADATA = (f"Authority=Developer ID Application: Example ({TEAM})\n"
             f"TeamIdentifier={TEAM}\nTimestamp=Nov 4, 2026 at 1:00:00 PM\n"
-            "CodeDirectory v=20500 flags=0x10000(runtime)\n")
+            "CodeDirectory v=20500 flags=0x10000(runtime)\nCDHash=" + "b" * 40 + "\n")
 NOTARY = {"id": "01234567-89ab-cdef-0123-456789abcdef", "status": "Accepted"}
 VALUES = {name: "private-test-value" for name in signing.SECRETS}
 VALUES.update(APPLE_DEVELOPER_ID_CERTIFICATE=base64.b64encode(b"fake fixture p12").decode(),
               NOTARYTOOL_TEAM_ID=TEAM)
+
+
+def notary_log(filename, digest, package="example-component.4dbase", cli="example-cli"):
+    return {"jobId": NOTARY["id"], "status": "Accepted", "statusCode": 0,
+            "archiveFilename": filename, "sha256": digest, "issues": None,
+            "ticketContents": [
+                {"path": filename + "/" + package + "/" + name,
+                 "arch": arch, "digestAlgorithm": "SHA-256", "cdhash": "b" * 40}
+                for name, architectures in ((f"Resources/bin/macOS/{cli}", ("arm64", "x86_64")),
+                                            ("Libraries/lib4d-arm64.dylib", ("arm64",)))
+                for arch in architectures]}
 
 
 class SigningTests(unittest.TestCase):
@@ -58,6 +69,7 @@ class SigningTests(unittest.TestCase):
                        METADATA.replace("Authority=Developer ID Application:", "Authority=Other:"),
                        METADATA.replace("Timestamp=", "Signed Time="),
                        METADATA.replace("Nov 4, 2026 at 1:00:00 PM", "none"),
+                       METADATA.replace("CDHash=", "Missing="),
                        METADATA.replace("(runtime)", "")):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 signing.signature_metadata(output, TEAM)
@@ -72,10 +84,11 @@ class SigningTests(unittest.TestCase):
             return METADATA
 
         with patch.object(signing, "command", side_effect=command):
-            result = signing.verify_code(Path("tool"), TEAM)
+            result = signing.verify_code(Path("tool"), TEAM, notarized=True)
         self.assertEqual(set(result), {"arm64", "x86_64"})
         self.assertIn("--all-architectures", calls[0])
         self.assertIn("--strict", calls[0])
+        self.assertIn("--check-notarization", calls[0])
         self.assertIn("anchor apple generic", calls[0][-2])
         self.assertEqual([call[-2] for call in calls[2:]], ["x86_64", "arm64"])
 
@@ -152,14 +165,49 @@ class SigningTests(unittest.TestCase):
                 signing.accepted_submission(json.dumps(value))
 
     def test_notary_uses_isolated_keychain_and_fails_on_rejection(self):
-        with patch.object(signing, "command", side_effect=["", json.dumps(NOTARY)]) as command:
-            self.assertEqual(signing.notarize(Path("archive.zip"), VALUES, Path("private.keychain")), NOTARY)
-        self.assertIn("--wait", command.call_args.args[0])
-        self.assertIn("--keychain", command.call_args.args[0])
-        self.assertEqual(command.call_args.args[0][-3:], ["30m", "--output-format", "json"])
+        log = notary_log("archive.zip", "a" * 64)
+        with patch.object(signing, "command", side_effect=[
+                "", json.dumps(NOTARY), json.dumps(log)]) as command, patch.object(
+                signing, "sha256", return_value="a" * 64):
+            self.assertEqual(signing.notarize(Path("archive.zip"), VALUES, Path("private.keychain")),
+                             {**NOTARY, "log": log})
+        submission = command.call_args_list[1].args[0]
+        self.assertIn("--wait", submission)
+        self.assertIn("--keychain", submission)
+        self.assertEqual(submission[-3:], ["30m", "--output-format", "json"])
+        self.assertEqual(command.call_args.args[0][1:3], ["notarytool", "log"])
         with patch.object(signing, "command", side_effect=["", '{"status":"Invalid"}']):
             with self.assertRaisesRegex(ValueError, "Accepted"):
                 signing.notarize(Path("archive.zip"), VALUES, Path("private.keychain"))
+
+    def test_notary_log_binds_job_status_archive_and_exact_signed_bytes(self):
+        log = notary_log("archive.zip", "a" * 64)
+        signing.validate_notary_log(log, NOTARY, "archive.zip", "a" * 64)
+        for field in ("jobId", "status", "statusCode", "archiveFilename", "sha256", "ticketContents", "issues"):
+            altered = {**log, field: "wrong"}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                signing.validate_notary_log(altered, NOTARY, "archive.zip", "a" * 64)
+        code = {"Resources/bin/macOS/example-cli": {
+            "architectures": {arch: {"cdhash": "b" * 40} for arch in ("arm64", "x86_64")}}}
+        signing.verify_tickets(log, code, "example-component.4dbase")
+        for field in ("arch", "digestAlgorithm", "cdhash", "path"):
+            altered = json.loads(json.dumps(log))
+            altered["ticketContents"][0][field] = "wrong"
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "ticket"):
+                signing.verify_tickets(altered, code, "example-component.4dbase")
+
+    def test_only_exact_spctl_not_an_app_diagnostic_is_unsupported(self):
+        path = Path("bare-tool")
+        expected = str(path) + ": rejected (the code is valid but does not seem to be an app)"
+        with patch.object(signing, "command", side_effect=signing.ToolFailure("spctl", 3, expected)):
+            self.assertEqual(signing.assess_cli(path)["status"], "not_run")
+        for code, diagnostic in ((1, expected), (3, "rejected"), (3, expected + "\nother error")):
+            with patch.object(signing, "command", side_effect=signing.ToolFailure("spctl", code, diagnostic)):
+                with self.assertRaises(signing.ToolFailure):
+                    signing.assess_cli(path)
+        with patch.object(signing, "command", return_value="accepted\nsource=Developer ID"):
+            with self.assertRaises(ValueError):
+                signing.assess_cli(path)
 
     def test_validation_ref_never_resolves_tag_or_allows_pr(self):
         with patch.object(release_ref, "commit", return_value="a" * 40), patch.object(
@@ -268,7 +316,7 @@ class SignedPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unreviewed"):
             signing.code_paths(component, self.config["cli"])
 
-    def run_pipeline(self, failure=None):
+    def run_pipeline(self, failure=None, unsupported_spctl=False):
         self.fixture.package()
         (self.root / "build/source-host-status.json").write_text('{"success":true}')
         contract = self.root / "tests/host/contract.json"
@@ -281,6 +329,7 @@ class SignedPackageTests(unittest.TestCase):
         unsigned_hash = sha256(self.archive)
 
         def command(args):
+            self.assertFalse(any(name in os.environ for name in signing.SECRETS))
             if args[0] == "codesign" and "--sign" in args:
                 if failure == "codesign":
                     raise ValueError("codesign failed")
@@ -292,13 +341,24 @@ class SignedPackageTests(unittest.TestCase):
             if args[0] == "spctl":
                 if failure == "gatekeeper":
                     raise ValueError("spctl failed")
+                if unsupported_spctl:
+                    raise signing.ToolFailure("spctl", 3, str(args[-1])
+                        + ": rejected (the code is valid but does not seem to be an app)")
                 return "accepted\nsource=Notarized Developer ID"
             return ""
 
-        def verify(path, team):
+        def verify(path, team, *, notarized=False):
+            if notarized and failure == "online_ticket":
+                raise ValueError("online ticket unavailable")
             architectures = {"arm64"} if path.suffix == ".dylib" else {"arm64", "x86_64"}
-            return {arch: {"team": team, "timestamp": "Nov 4, 2026", "hardened_runtime": True}
+            return {arch: {"team": team, "timestamp": "Nov 4, 2026", "hardened_runtime": True,
+                           "cdhash": "b" * 40}
                     for arch in architectures}
+
+        def notarize(archive, values, keychain):
+            if failure == "notary":
+                raise ValueError("notary Invalid")
+            return {**NOTARY, "log": notary_log(archive.name, sha256(archive))}
 
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {
@@ -311,9 +371,7 @@ class SignedPackageTests(unittest.TestCase):
             stack.enter_context(patch.object(signing, "verify_code", side_effect=verify))
             stack.enter_context(patch.object(signing, "inspect", return_value=["/usr/lib/libSystem.B.dylib"]))
             stack.enter_context(patch.object(signing, "validate_status"))
-            stack.enter_context(patch.object(signing, "notarize",
-                **({"side_effect": ValueError("notary Invalid")} if failure == "notary"
-                   else {"return_value": NOTARY})))
+            stack.enter_context(patch.object(signing, "notarize", side_effect=notarize))
             host = stack.enter_context(patch.object(signing, "test_4d",
                 **({"side_effect": ValueError("host failed")} if failure == "host"
                    else {"return_value": {"success": True, "finished": True, "compiled": True}})))
@@ -333,6 +391,8 @@ class SignedPackageTests(unittest.TestCase):
             self.assertEqual(result["artifact"]["sha256"], sha256(self.archive))
             self.assertFalse(result["release_ready"])
             self.assertTrue(result["finished"])
+            self.assertEqual(result["steps"]["gatekeeper_cli"]["status"],
+                             "not_run" if unsupported_spctl else "passed")
             host.assert_called_once()
             component = host.call_args.args[2]
             self.assertEqual(signing.inventory(component), result["files"])
@@ -345,8 +405,11 @@ class SignedPackageTests(unittest.TestCase):
     def test_pipeline_separates_original_provenance_and_final_signed_hashes(self):
         self.run_pipeline()
 
+    def test_bare_cli_spctl_is_not_run_but_online_tickets_and_real_host_are_required(self):
+        self.run_pipeline(unsupported_spctl=True)
+
     def test_no_success_report_on_codesign_notary_gatekeeper_or_final_host_failure(self):
-        for failure in ("codesign", "notary", "gatekeeper", "host"):
+        for failure in ("codesign", "notary", "online_ticket", "gatekeeper", "host"):
             with self.subTest(failure=failure):
                 self.run_pipeline(failure)
 

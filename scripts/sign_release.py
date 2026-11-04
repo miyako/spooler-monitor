@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,15 @@ MACHO = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
          b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"}
 
 
+class ToolFailure(ValueError):
+    def __init__(self, tool, returncode, diagnostic, operation=""):
+        self.tool = tool
+        self.returncode = returncode
+        self.diagnostic = diagnostic
+        super().__init__(f"{tool}{operation} failed (exit {returncode})"
+                         + (": " + diagnostic if diagnostic else ""))
+
+
 def command(args, *, timeout=120):
     """Never include credential-bearing argv or vendor diagnostics in exceptions."""
     try:
@@ -41,9 +51,9 @@ def command(args, *, timeout=120):
         diagnostic = ""
         operation = ""
         if tool in {"codesign", "spctl", "otool", "lipo"}:
-            diagnostic = ": " + result.stderr.strip()
+            diagnostic = result.stderr.strip()
             operation = " " + args[1]
-        raise ValueError(f"{tool}{operation} failed (exit {result.returncode}){diagnostic}")
+        raise ToolFailure(tool, result.returncode, diagnostic, operation)
     return result.stdout + result.stderr
 
 
@@ -121,15 +131,18 @@ def signature_metadata(output, team):
         raise ValueError("signed code requires a secure timestamp")
     if not re.search(r"flags=.*\bruntime\b", output):
         raise ValueError("signed code requires hardened runtime")
-    return {"team": team, "timestamp": timestamp, "hardened_runtime": True}
+    if not re.fullmatch(r"[a-f0-9]{40}", fields.get("CDHash", "")):
+        raise ValueError("signed code requires an architecture CDHash")
+    return {"team": team, "timestamp": timestamp, "hardened_runtime": True,
+            "cdhash": fields["CDHash"]}
 
 
-def verify_code(path, team):
+def verify_code(path, team, *, notarized=False):
     requirement = ('anchor apple generic and '
                    'certificate leaf[field.1.2.840.113635.100.6.1.13] exists and '
                    f'certificate leaf[subject.OU] = "{team}"')
     command(["codesign", "--verify", "--strict", "--all-architectures",
-             "-R=" + requirement, path])
+             *(["--check-notarization"] if notarized else []), "-R=" + requirement, path])
     architectures = command(["lipo", "-archs", path]).strip().split()
     if not architectures or set(architectures) - {"arm64", "x86_64"}:
         raise ValueError("unexpected signed Mach-O architectures")
@@ -212,10 +225,49 @@ def notarize(archive, values, keychain):
     command(["xcrun", "notarytool", "store-credentials", profile,
              "--apple-id", values["NOTARYTOOL_APPLE_ID"], "--team-id", values["NOTARYTOOL_TEAM_ID"],
              "--password", values["NOTARYTOOL_PASSWORD"], "--keychain", keychain])
-    return accepted_submission(command(
+    status = accepted_submission(command(
         ["xcrun", "notarytool", "submit", archive, "--keychain-profile", profile,
          "--keychain", keychain, "--wait", "--timeout", "30m", "--output-format", "json"],
         timeout=1900))
+    log = json.loads(command(["xcrun", "notarytool", "log", status["id"],
+                              "--keychain-profile", profile, "--keychain", keychain]))
+    validate_notary_log(log, status, archive.name, sha256(archive))
+    return {**status, "log": log}
+
+
+def validate_notary_log(log, status, filename, digest):
+    if (log.get("jobId") != status["id"] or log.get("status") != "Accepted"
+            or type(log.get("statusCode")) is not int or log["statusCode"] != 0
+            or log.get("archiveFilename") != filename or log.get("sha256") != digest
+            or log.get("issues") not in (None, [])
+            or not isinstance(log.get("ticketContents"), list) or not log["ticketContents"]):
+        raise ValueError("Apple notarization log does not identify the accepted final ZIP")
+
+
+def verify_tickets(log, code, package_name):
+    for name, item in code.items():
+        suffix = "/" + package_name + "/" + name
+        for arch, metadata in item["architectures"].items():
+            matches = [ticket for ticket in log["ticketContents"]
+                       if ticket.get("path", "").endswith(suffix) and ticket.get("arch") == arch
+                       and ticket.get("digestAlgorithm") == "SHA-256"
+                       and ticket.get("cdhash") == metadata["cdhash"]]
+            if len(matches) != 1:
+                raise ValueError("Apple log is missing exact signed architecture ticket: " + name + "/" + arch)
+
+
+def assess_cli(path):
+    try:
+        assessment = command(["spctl", "--assess", "--type", "execute", "--verbose=4", path])
+    except ToolFailure as error:
+        expected = str(path) + ": rejected (the code is valid but does not seem to be an app)"
+        if error.tool != "spctl" or error.returncode != 3 or error.diagnostic != expected:
+            raise
+        return {"status": "not_run", "reason": "spctl app assessment does not support bare CLI",
+                "exit_code": 3, "diagnostic": error.diagnostic}
+    if "source=Notarized Developer ID" not in assessment:
+        raise ValueError("Gatekeeper did not confirm Notarized Developer ID")
+    return {"status": "passed", "assessment": assessment.strip()}
 
 
 def sign_release(root, tool4d):
@@ -223,9 +275,13 @@ def sign_release(root, tool4d):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("signed compiled acceptance requires native macOS ARM64")
     values = credentials()
+    for name in SECRETS:
+        os.environ.pop(name, None)
     config = load_config(root, initialized=True, repository=os.environ.get("GITHUB_REPOSITORY"))
     archive = root / "dist" / (config["repository"] + ".zip")
     report_path = archive.with_suffix(".signing.json")
+    if any(path.is_symlink() for path in (archive, report_path, *report_path.parents)):
+        raise ValueError("signed artifact/report paths must not traverse symlinks")
     report_path.unlink(missing_ok=True)
     source_component = root / "component" / config["repository"]
     validate_compile(root, source_component, config["repository"])
@@ -254,6 +310,7 @@ def sign_release(root, tool4d):
         signed_hash = sha256(archive)
         print("Submitting exact signed ZIP to Apple notarization", flush=True)
         notary = notarize(archive, values, keychain)
+        verify_tickets(notary["log"], code, component.name)
         print("Apple notarization Accepted: " + notary["id"], flush=True)
     if sha256(archive) != signed_hash:
         raise ValueError("ZIP changed after notarization")
@@ -261,11 +318,11 @@ def sign_release(root, tool4d):
     if inventory(component) != final_inventory:
         raise ValueError("final ZIP differs from signed byte inventory")
     for name in names:
-        verify_code(component / name, values["NOTARYTOOL_TEAM_ID"])
+        verify_code(component / name, values["NOTARYTOOL_TEAM_ID"], notarized=True)
+        code[name]["online_notarization_ticket"] = {"status": "passed",
+            "command": "codesign --verify --strict --all-architectures --check-notarization"}
     cli = component / "Resources/bin/macOS" / config["cli"]
-    assessment = command(["spctl", "--assess", "--type", "execute", "--verbose=4", cli])
-    if "source=Notarized Developer ID" not in assessment:
-        raise ValueError("Gatekeeper did not confirm Notarized Developer ID")
+    assessment = assess_cli(cli)
     host = test_4d(root, tool4d, component)
     (root / "build/compiled-host-status.json").write_text(json.dumps(host, indent=2) + "\n")
     if sha256(archive) != signed_hash or inventory(component) != final_inventory:
@@ -282,7 +339,8 @@ def sign_release(root, tool4d):
         "steps": {
             "source_host_macos_arm64": {"status": "passed", "report": source_report},
             "compiled_host_macos_arm64": {"status": "passed", "report": host},
-            "gatekeeper_cli": {"status": "passed", "assessment": assessment.strip()},
+            "gatekeeper_cli": assessment,
+            "downloaded_quarantine": {"status": "not_run", "reason": "no downloaded-user quarantine test"},
             "stapling": {"status": "not_run", "reason": "ZIP and bare code do not support stapling"},
             "macos_x64_4d": {"status": "not_run", "reason": "runtime unavailable"},
             "windows_4d": {"status": "not_run", "reason": "runtime unavailable"},
@@ -306,10 +364,12 @@ def verify_report(root):
                                           "bytes": archive.stat().st_size}
             or report.get("notarization", {}).get("status") != "Accepted"):
         raise ValueError("final signed artifact evidence mismatch")
-    for step in ("source_host_macos_arm64", "compiled_host_macos_arm64", "gatekeeper_cli"):
+    for step in ("source_host_macos_arm64", "compiled_host_macos_arm64"):
         if report.get("steps", {}).get(step, {}).get("status") != "passed":
             raise ValueError("required signed package check missing: " + step)
     accepted_submission(json.dumps(report["notarization"]))
+    validate_notary_log(report["notarization"]["log"], report["notarization"],
+                       archive.name, sha256(archive))
     contract = json.loads((root / "tests/host/contract.json").read_text())
     for step, compiled in (("source_host_macos_arm64", False), ("compiled_host_macos_arm64", True)):
         validate_status(report["steps"][step]["report"], contract, compiled)
@@ -321,10 +381,22 @@ def verify_report(root):
         item = report["signed_code"][name]
         if item.get("status") != "passed" or set(item.get("architectures", {})) != architectures:
             raise ValueError("signed architecture evidence missing: " + name)
+        if item.get("online_notarization_ticket", {}).get("status") != "passed":
+            raise ValueError("online notarization ticket check missing: " + name)
         for metadata in item["architectures"].values():
             if (not re.fullmatch(r"[A-Z0-9]{10}", metadata.get("team", ""))
                     or not metadata.get("timestamp") or metadata.get("hardened_runtime") is not True):
                 raise ValueError("signed identity/timestamp/runtime evidence missing")
+    verify_tickets(report["notarization"]["log"], report["signed_code"], config["repository"] + ".4dbase")
+    gatekeeper = report["steps"].get("gatekeeper_cli", {})
+    if gatekeeper.get("status") == "not_run":
+        if (gatekeeper.get("exit_code") != 3
+                or gatekeeper.get("reason") != "spctl app assessment does not support bare CLI"
+                or not gatekeeper.get("diagnostic", "").endswith(
+                    ": rejected (the code is valid but does not seem to be an app)")):
+            raise ValueError("unsupported Gatekeeper assessment evidence missing")
+    elif gatekeeper.get("status") != "passed" or "source=Notarized Developer ID" not in gatekeeper.get("assessment", ""):
+        raise ValueError("Gatekeeper assessment failed or missing")
     with zipfile.ZipFile(archive) as packed:
         files = {}
         prefix = config["repository"] + ".4dbase/"
@@ -349,6 +421,10 @@ def main():
     parser.add_argument("--tool4d", type=Path)
     parser.add_argument("--verify-report", action="store_true")
     args = parser.parse_args()
+    def interrupted(signum, frame):
+        raise InterruptedError("signing interrupted; cleaning temporary keychain")
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     try:
         if args.verify_report:
             verify_report(args.root)
