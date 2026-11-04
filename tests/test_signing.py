@@ -128,7 +128,7 @@ class SigningTests(unittest.TestCase):
 
         def command(args):
             calls.append(args)
-            if args[1] == "list-keychains" and "-s" in args:
+            if args[1] == "list-keychains" and "-s" in args and len(args) == 5:
                 raise ValueError("restore failed")
             return IDENTITY if args[1] == "find-identity" else ""
 

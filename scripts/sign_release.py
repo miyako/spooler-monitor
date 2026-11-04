@@ -88,6 +88,7 @@ def signing_keychain(values):
             p12.write_bytes(certificate)
             command(["security", "create-keychain", "-p", password, keychain])
             created = True
+            command(["security", "list-keychains", "-d", "user", "-s", keychain, *search_list])
             command(["security", "set-keychain-settings", "-lut", "21600", keychain])
             command(["security", "unlock-keychain", "-p", password, keychain])
             command(["security", "import", p12, "-P",
