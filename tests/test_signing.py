@@ -216,6 +216,7 @@ class SigningTests(unittest.TestCase):
             result = release_ref.validation(ROOT, event="workflow_dispatch", event_sha="a" * 40)
             self.assertEqual(result["validation_only"], "true")
             self.assertEqual(result["sha"], "a" * 40)
+            self.assertEqual(result["tag"], "0.1.0")
             tag.assert_not_called()
             for event in ("pull_request", "push", "workflow_call"):
                 with self.assertRaises(ValueError):

@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 from build_provenance import commit, sha256, source_digest
-from ci_config import ROOT, TARGETS, load_config
+from ci_config import ROOT, TARGETS, load_config, release_tag
 from native_dependencies import inspect
 from package_component import package, unpack_for_test, validate_compile, validate_resources, write_zip
 from test_4d import test_4d, validate_status
@@ -290,7 +290,7 @@ def sign_release(root, tool4d):
     contract = json.loads((root / "tests/host/contract.json").read_text())
     validate_status(source_report, contract, False)
     unsigned_hash = sha256(archive)
-    package(root, repository=os.environ["GITHUB_REPOSITORY"], tag="v" + config["version"])
+    package(root, repository=os.environ["GITHUB_REPOSITORY"], tag=release_tag(config["version"]))
     if sha256(archive) != unsigned_hash:
         raise ValueError("unsigned ZIP did not match freshly verified compilation/package inputs")
     component = unpack_for_test(root, archive)

@@ -1,11 +1,11 @@
 name: Release compiled component
 on:
   push:
-    tags: ['v*']
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
   workflow_dispatch:
     inputs:
       version_tag:
-        description: Existing matching version tag (v<SemVer>); never creates a tag
+        description: Existing matching version tag (bare <SemVer>, e.g. 0.1.1; legacy v0.1.0 accepted); never creates a tag
         required: false
         type: string
       validation_only:

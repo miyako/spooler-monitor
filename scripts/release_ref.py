@@ -7,13 +7,12 @@ import re
 import subprocess
 import sys
 
-from ci_config import ROOT, SEMVER, load_config
+from ci_config import ROOT, load_config, release_tag, tag_version
 from build_provenance import commit
 
 
 def validate_tag(tag):
-    if not isinstance(tag, str) or not re.fullmatch("v" + SEMVER, tag, flags=re.ASCII):
-        raise ValueError("release tag must be v<SemVer>, not a branch or arbitrary ref")
+    tag_version(tag)
     return tag
 
 
@@ -61,7 +60,7 @@ def validation(root, *, event, event_sha):
             or commit(root) != event_sha):
         raise ValueError("validation must use the exact checked-out event commit")
     config = load_config(root, initialized=True, repository=os.environ.get("GITHUB_REPOSITORY"))
-    return {"tag": "v" + config["version"], "sha": event_sha, "validation_only": "true"}
+    return {"tag": release_tag(config["version"]), "sha": event_sha, "validation_only": "true"}
 
 
 def main():
