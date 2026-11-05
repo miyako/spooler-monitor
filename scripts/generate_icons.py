@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Rasterize the original rectangle/polygon SVG and embed the PNG into a 64x64 SVG."""
+"""Optional bootstrap: rasterize assets/icon-source.svg into missing component icons.
+
+The committed Resources/logo.png and Resources/logo.svg are the source of truth.
+This helper only creates icons for a new project that has none; it never
+overwrites an existing icon. Use scripts/validate_icons.py to check icons.
+"""
 import argparse
 import base64
 import json
@@ -10,6 +15,7 @@ import xml.etree.ElementTree as ET
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def chunk(kind, payload):
@@ -69,32 +75,43 @@ def render(source):
 
 
 def generate(root, check=False):
+    if check:
+        import validate_icons
+        validate_icons.validate(root)
+        return []
     root = Path(root)
     config = json.loads((root / "template.json").read_text())
     directory = root / "component" / config["repository"] / "Resources"
+    targets = [directory / name for name in ("logo.png", "logo.svg")]
+    existing = [path for path in targets if path.exists()]
+    if len(existing) == len(targets):
+        return []
+    if existing:
+        raise ValueError("refusing to bootstrap icons; existing custom icon would be mismatched: "
+                         + ", ".join(str(path) for path in existing))
     source = (root / "assets" / "icon-source.svg").read_bytes()
     png = render(source)
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewport-fill-opacity="0">\n'
            '  <image x="0" y="0" width="64" height="64" xlink:href="data:image/png;base64,'
            + base64.b64encode(png).decode("ascii") + '"/>\n</svg>\n').encode("ascii")
-    for name, content in (("logo.png", png), ("logo.svg", svg)):
-        path = directory / name
-        if check:
-            if not path.is_file() or path.read_bytes() != content:
-                raise ValueError("icon is missing or stale: " + str(path))
-        else:
-            directory.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
+    directory.mkdir(parents=True, exist_ok=True)
+    written = []
+    for path, content in zip(targets, (png, svg)):
+        with open(path, "xb") as handle:
+            handle.write(content)
+        written.append(path)
+    return written
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="validate existing icons (same as scripts/validate_icons.py)")
     args = parser.parse_args()
     try:
         generate(args.root, args.check)
-    except (ValueError, OSError, ET.ParseError) as error:
+    except (ValueError, OSError, KeyError, ET.ParseError) as error:
         print(error, file=sys.stderr)
         return 1
     return 0

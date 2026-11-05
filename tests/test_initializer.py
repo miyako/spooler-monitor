@@ -118,31 +118,62 @@ class InitializerTests(unittest.TestCase):
 
 
 class IconTests(unittest.TestCase):
-    def test_png_is_real_rgba_and_exact_svg_payload(self):
-        import base64
-        import struct
-        import zlib
-        name = json.loads((ROOT / "template.json").read_text())["repository"]
-        resources = ROOT / "component" / name / "Resources"
-        png = (resources / "logo.png").read_bytes()
-        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(struct.unpack(">IIBBBBB", png[16:29]), (1024, 1024, 8, 6, 0, 0, 0))
-        position = 8
-        compressed = b""
-        kinds = []
-        while position < len(png):
-            length = struct.unpack(">I", png[position:position + 4])[0]
-            kind = png[position + 4:position + 8]
-            payload = png[position + 8:position + 8 + length]
-            checksum = struct.unpack(">I", png[position + 8 + length:position + 12 + length])[0]
-            self.assertEqual(checksum, zlib.crc32(kind + payload) & 0xffffffff)
-            kinds.append(kind)
-            if kind == b"IDAT":
-                compressed += payload
-            position += length + 12
-        self.assertEqual(kinds, [b"IHDR", b"IDAT", b"IEND"])
-        self.assertEqual(len(zlib.decompress(compressed)), 1024 * (1 + 1024 * 4))
-        svg = ET.parse(resources / "logo.svg").getroot()
-        href = svg[0].attrib["{http://www.w3.org/1999/xlink}href"]
-        self.assertTrue(href.startswith("data:image/png;base64,"))
-        self.assertEqual(base64.b64decode(href.split(",", 1)[1], validate=True), png)
+    @staticmethod
+    def load(name):
+        import sys
+        sys.path.insert(0, str(ROOT / "scripts"))
+        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def fixture(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "template.json").write_text(json.dumps({"repository": "demo"}))
+        (directory / "assets").mkdir()
+        shutil.copy2(ROOT / "assets" / "icon-source.svg", directory / "assets" / "icon-source.svg")
+        return directory, directory / "component" / "demo" / "Resources"
+
+    def test_committed_custom_icons_are_valid(self):
+        self.load("validate_icons").validate(ROOT)
+
+    def test_validation_rejects_invalid_icons(self):
+        validator = self.load("validate_icons")
+        root, resources = self.fixture()
+        resources.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            validator.validate(root)
+        png = (ROOT / "component" / json.loads((ROOT / "template.json").read_text())["repository"]
+               / "Resources" / "logo.png").read_bytes()
+        (resources / "logo.png").write_bytes(b"not a png")
+        (resources / "logo.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        with self.assertRaisesRegex(ValueError, "signature"):
+            validator.validate(root)
+        (resources / "logo.png").write_bytes(png[:22] + bytes([png[22] ^ 0xff]) + png[23:])
+        with self.assertRaisesRegex(ValueError, "IHDR"):
+            validator.validate(root)
+        (resources / "logo.png").write_bytes(png)
+        (resources / "logo.svg").write_text("<svg")
+        with self.assertRaisesRegex(ValueError, "well-formed"):
+            validator.validate(root)
+        (resources / "logo.svg").write_text("<html/>")
+        with self.assertRaisesRegex(ValueError, "root"):
+            validator.validate(root)
+        (resources / "logo.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        validator.validate(root)
+
+    def test_bootstrap_creates_missing_icons_but_never_overwrites(self):
+        generator = self.load("generate_icons")
+        root, resources = self.fixture()
+        self.assertEqual(len(generator.generate(root)), 2)
+        self.load("validate_icons").validate(root)
+        (resources / "logo.png").write_bytes(b"\x89PNG custom")
+        (resources / "logo.svg").write_bytes(b"<svg custom/>")
+        self.assertEqual(generator.generate(root), [])
+        self.assertEqual((resources / "logo.png").read_bytes(), b"\x89PNG custom")
+        (resources / "logo.svg").unlink()
+        with self.assertRaisesRegex(ValueError, "refusing"):
+            generator.generate(root)
+        self.assertEqual((resources / "logo.png").read_bytes(), b"\x89PNG custom")
+        self.assertFalse((resources / "logo.svg").exists())
