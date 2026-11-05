@@ -23,6 +23,25 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ("macos-x64", "macos-arm64", "windows-x64")
 SEMVER = r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 
+# Release tags are bare SemVer. Only this historical tag keeps its legacy "v" prefix.
+LEGACY_TAGS = frozenset({"v0.1.0"})
+
+
+def release_tag(version):
+    """Return the tag name for a version: bare SemVer, never "v"-prefixed."""
+    if not isinstance(version, str) or not re.fullmatch(SEMVER, version, flags=re.ASCII):
+        raise ValueError("release tag version must be SemVer")
+    return version
+
+
+def tag_version(tag):
+    """Return the SemVer named by a bare release tag or the legacy v0.1.0 tag."""
+    if isinstance(tag, str) and re.fullmatch(SEMVER, tag, flags=re.ASCII):
+        return tag
+    if tag in LEGACY_TAGS:
+        return tag[1:]
+    raise ValueError("release tag must be bare <SemVer> (no v prefix), not a branch or arbitrary ref")
+
 
 def load_config(root=ROOT, *, initialized=False, repository=None, tag=None):
     config = json.loads((Path(root) / "template.json").read_text(encoding="utf-8"))
@@ -71,8 +90,8 @@ def load_config(root=ROOT, *, initialized=False, repository=None, tag=None):
             raise ValueError("repository identity must be owner/name")
         if repository.split("/")[1] != config["repository"]:
             raise ValueError("actual repository does not match template.json")
-    if tag is not None and tag != "v" + config["version"]:
-        raise ValueError("release tag must equal v<template.json version>")
+    if tag is not None and tag_version(tag) != config["version"]:
+        raise ValueError("release tag must equal <template.json version> (bare SemVer, no v prefix)")
     return config
 
 

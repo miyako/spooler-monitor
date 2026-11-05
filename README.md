@@ -201,7 +201,7 @@ workflow**, `validation_only` is a Boolean defaulting to **true**:
 | Mode | Immutable source and gates | Publication |
 | --- | --- | --- |
 | Validation-only dispatch | Selected workflow ref's `github.sha`; no existing version tag or `FOURD_ENABLED` required | Cannot publish |
-| Production existing-tag path | Existing matching `v<version>` tag resolved/peeled to a commit SHA; `FOURD_ENABLED=true` required | Future separately authorized publication only |
+| Production existing-tag path | Existing matching bare `<version>` tag (e.g. `0.1.1`; no `v` prefix, only legacy `v0.1.0` accepted) resolved/peeled to a commit SHA; `FOURD_ENABLED=true` required | Future separately authorized publication only |
 
 Every native matrix job and downstream stage uses the same resolved SHA.
 Production re-verifies the tag has not moved before publication; selecting a
