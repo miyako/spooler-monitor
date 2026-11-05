@@ -162,8 +162,8 @@ Update these surfaces together, preserving reusable infrastructure:
 7. Compiler-generated `Resources/en.lproj/syntaxEN.json`: regenerate through the
    actual compiler and verify the new class appears; never retain stale Greeting
    completion metadata.
-8. Redistribution notices under `component/<name>/Resources/licenses/`, and icon
-   source/generated icons only if the feature requires artwork changes.
+8. Redistribution notices under `component/<name>/Resources/licenses/`, and the
+   committed custom icons only if the feature requires artwork changes.
 
 Keep `_CLI`, `_Process` and `_CaptureError` generic. Feature validators and
 algorithms belong in feature classes/CLI, not the process adapter. Add exact
@@ -287,7 +287,7 @@ waive redistribution notices or licensing for the IDE/Server/merged applications
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 scripts/generate_icons.py --check
+python3 scripts/validate_icons.py
 python3 scripts/build_cli.py --root . --target macos-arm64
 ```
 
@@ -609,10 +609,13 @@ cross-build or optional skipped workflow as passed.
 
 ## 8. Icons, licensing and destination signing
 
-Edit original `assets/icon-source.svg` within the supported rectangle/polygon
-renderer; regenerate **both** Resources icons. `logo.png` is real RGBA PNG and
-`logo.svg` embeds its byte-identical PNG data URI: **PNG-in-SVG**, not the reverse.
-For arbitrary artwork use a pinned real SVG rasterizer. Never rename SVG to PNG.
+The committed `component/<name>/Resources/logo.png` and `logo.svg` are the
+**source of truth**; custom hand-made artwork is kept as-is and is never required
+to byte-match generator output. `python3 scripts/validate_icons.py` only checks
+that `logo.png` is a real PNG (signature plus valid IHDR) and `logo.svg` is
+well-formed XML with an SVG `<svg>` root. `scripts/generate_icons.py` is an
+optional bootstrap that rasterizes `assets/icon-source.svg` only when **both**
+icons are missing; it never overwrites an existing icon. Never rename SVG to PNG.
 
 The scaffold is MIT; retain its copyright/license. Review all bundled tools,
 static libraries and language runtimes separately and include required notices

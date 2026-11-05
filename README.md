@@ -146,7 +146,7 @@ The component is MIT licensed; retain [LICENSE](LICENSE).
 ```sh
 python3 scripts/doctor.py --root .
 python3 -m unittest discover -s tests -v
-python3 scripts/generate_icons.py --check
+python3 scripts/validate_icons.py
 python3 scripts/build_cli.py --root . --target macos-arm64
 ```
 
