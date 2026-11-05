@@ -1,0 +1,149 @@
+name: Publish
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Semantic version bump from the latest release tag
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compute next version and update version files
+        id: version
+        env:
+          MODE: ${{ inputs.mode }}
+        run: python scripts/version.py --mode "$MODE" --write
+      - name: Static tests
+        env:
+          TEST_CLI_LANGUAGE: none
+        run: python -m unittest discover -s tests
+      - name: Commit version to main
+        id: commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Set version $VERSION"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.version.outputs.sha }}
+
+  publish:
+    needs: [version, native]
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA: ${{ needs.version.outputs.sha }}
+      TOOL4D_URL: ${{ vars.TOOL4D_URL }}
+      TOOL4D_SHA256: ${{ vars.TOOL4D_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: component-resources
+          path: build/resources
+      - name: Restore validated native resources
+        shell: python
+        run: |
+          import pathlib, shutil, sys
+          sys.path.insert(0, "scripts")
+          from ci_config import load_config
+          from package_component import validate_resources
+          config = load_config(initialized=True)
+          component = pathlib.Path("component") / config["repository"]
+          destination = component / "Resources" / "bin"
+          shutil.copytree("build/resources", destination, dirs_exist_ok=True)
+          mac, windows = validate_resources(component, config["cli"])
+          mac.chmod(0o755)
+          windows.chmod(0o755)
+      - name: Download SHA-256-verified tool4D
+        run: python scripts/ci_config.py download-tool4d
+      - name: Test interpreted component from a real 4D host
+        run: |
+          python scripts/test_4d.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+          cp build/host-status.json build/source-host-status.json
+      - name: Compile both 4D targets
+        run: python scripts/compile_component.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+      - name: Package unsigned intermediate
+        run: python scripts/package_component.py --tag "$VERSION" --unpack-test
+      - name: Developer ID sign, notarize and host-test the final ZIP
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARYTOOL_APPLE_ID: ${{ secrets.NOTARYTOOL_APPLE_ID }}
+          NOTARYTOOL_PASSWORD: ${{ secrets.NOTARYTOOL_PASSWORD }}
+          NOTARYTOOL_TEAM_ID: ${{ secrets.NOTARYTOOL_TEAM_ID }}
+        run: python scripts/sign_release.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
+      - name: Verify signed report
+        run: python scripts/sign_release.py --verify-report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiled-release
+          path: |
+            dist/*.zip
+            dist/*.signing.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve compile and host diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-diagnostics
+          path: build/*status.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            echo "Tag $VERSION already exists" >&2
+            exit 1
+          fi
+          gh release create "$VERSION" dist/*.zip dist/*.signing.json --target "$SHA" --title "$VERSION" \
+            --notes "Compiled 4D component with Developer ID signed and Apple-notarized macOS CLI and native library, plus x64 Windows CLI. See the signing report for hashes and platform limitations."

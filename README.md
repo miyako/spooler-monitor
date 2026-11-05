@@ -188,25 +188,23 @@ mode true. The pair is `dist/spooler-monitor.zip` and
 alone is **partial**, with `release_ready:false`; it is not native Intel/Windows
 4D, dependency-manager download, signing or physical printing evidence.
 
-Ordinary CI does not publish. The destination-specific signed release contract
+Ordinary CI does not publish; see [Publishing](#publishing). The destination-specific signed release contract
 below supersedes the template's historical unsigned-release instructions;
 the generic unsigned local acceptance path above remains unchanged.
 
-## Signed release validation and future publication
+## Publishing
 
-The authorized `.github/workflows/release.yml` pipeline uses
-`scripts/sign_release.py`. In **Actions → Release compiled component → Run
-workflow**, `validation_only` is a Boolean defaulting to **true**:
-
-| Mode | Immutable source and gates | Publication |
-| --- | --- | --- |
-| Validation-only dispatch | Selected workflow ref's `github.sha`; no existing version tag or `FOURD_ENABLED` required | Cannot publish |
-| Production existing-tag path | Existing matching bare `<version>` tag (e.g. `0.1.1`; no `v` prefix, only legacy `v0.1.0` accepted) resolved/peeled to a commit SHA; `FOURD_ENABLED=true` required | Future separately authorized publication only |
-
-Every native matrix job and downstream stage uses the same resolved SHA.
-Production re-verifies the tag has not moved before publication; selecting a
-UI branch cannot replace that tag's source. No tag creation, publication or
-merge is authorized by the current implementation task.
+The only release workflow is `.github/workflows/publish.yml`. Open
+**Actions → Publish → Run workflow** and choose `mode`: `patch`, `minor` or
+`major` (default `patch`). Publish computes the next version from the highest
+existing `X.Y.Z` tag (legacy `v0.1.0` is read, so the next releases are
+`0.1.1` / `0.2.0` / `1.0.0`), writes it into the version files with
+`scripts/version.py`, commits it to `main`, builds the native CLIs through the
+reusable `ci.yml`, compiles, signs and notarizes the component with
+`scripts/sign_release.py`, host-tests the final ZIP, then creates the bare tag
+`X.Y.Z` (no `v`) and a GitHub release named `X.Y.Z` with
+`dist/spooler-monitor.zip` and `dist/spooler-monitor.signing.json`.
+There is no tag-push trigger; a failed run creates no tag.
 
 Six Actions secrets are already registered: `APPLE_DEVELOPER_ID_CERTIFICATE`
 (base64 Developer ID Application P12 including its private key),
