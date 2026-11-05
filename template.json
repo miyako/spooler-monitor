@@ -6,6 +6,6 @@
   "cli": "spooler-monitor",
   "language": "cpp",
   "feature": "Read local printer queue status and explicitly pause or resume queue processing on macOS and Windows",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "feature_class": "Queue"
 }

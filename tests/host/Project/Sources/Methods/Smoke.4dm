@@ -157,7 +157,7 @@ If ($result.error.code#"launch_failed")
 End if
 HOST_Phase:="malformed protocol"
 $report.protocolInvalid:=New collection
-For each ($name; New collection("not json"; "{\"protocol\":true,\"ok\":true,\"operation\":\"version\",\"version\":\"0.1.0\"}"; "{\"protocol\":false}"; "{\"protocol\":null}"; "true"; "false"; "null"; "1"; "[]"; "{\"protocol\":1,\"ok\":true,\"operation\":\"version\",\"version\":true}"; "{\"protocol\":1,\"ok\":true,\"operation\":\"list\",\"queues\":[]}"; "{\"protocol\":2,\"ok\":true,\"operation\":\"version\",\"version\":\"0.1.0\"}"))
+For each ($name; New collection("not json"; "{\"protocol\":true,\"ok\":true,\"operation\":\"version\",\"version\":\"0.1.1\"}"; "{\"protocol\":false}"; "{\"protocol\":null}"; "true"; "false"; "null"; "1"; "[]"; "{\"protocol\":1,\"ok\":true,\"operation\":\"version\",\"version\":true}"; "{\"protocol\":1,\"ok\":true,\"operation\":\"list\",\"queues\":[]}"; "{\"protocol\":2,\"ok\":true,\"operation\":\"version\",\"version\":\"0.1.1\"}"))
 	$result:=$tool._decode(New object("ok"; True; "stdout"; $name; "stderr"; ""; "exitCode"; 0); "version")
 	$report.protocolInvalid.push($result)
 	If ($result.ok | ($result.error.code#"invalid_protocol"))

@@ -361,7 +361,7 @@ Function _decodeResponse($result : Object; $field : Text)->$decoded : Object
 			If (Value type($payload.version)#Is text)
 				return This._invalidProtocol($result)
 			End if
-			If ($payload.version#"0.1.0")
+			If ($payload.version#"0.1.1")
 				return This._invalidProtocol($result)
 			End if
 		: ($operation="capabilities")

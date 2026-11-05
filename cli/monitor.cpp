@@ -131,7 +131,7 @@ Response execute(const std::vector<std::string>& args, const Factory& factory) {
         op = cmd == "--version" ? "version" : cmd;
         std::vector<std::pair<std::string, Json>> fields{
             {"protocol", Json(std::int64_t(1))}, {"ok", true}, {"operation", op}};
-        if (op == "version") fields.emplace_back("version", "0.1.0");
+        if (op == "version") fields.emplace_back("version", "0.1.1");
         else if (op == "inspect-argument") fields.emplace_back("argument", args[1]);
         else if (op == "capabilities") {
             fields.emplace_back("backend", native_backend_name());

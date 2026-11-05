@@ -1,6 +1,6 @@
 # spooler-monitor native CLI
 
-C++17, component/CLI version **0.1.0**, output protocol **1**. macOS 11+
+C++17, component/CLI version **0.1.1**, output protocol **1**. macOS 11+
 uses the system libcups; Windows x64 uses Winspool and the static MSVC CRT.
 There are no third-party source dependencies, JSON parser, shell invocations,
 runtime downloads, credential prompts, or implicit queue modifications.
@@ -28,7 +28,7 @@ and observation; no transaction, rollback, or exclusive access is promised.
 
 Success: exit 0, empty stderr, exactly one compact UTF-8 JSON object plus LF
 on stdout. Every success starts with `protocol:1,ok:true,operation:<command>`.
-`--version` uses operation `version` and adds `version:"0.1.0"`.
+`--version` uses operation `version` and adds `version:"0.1.1"`.
 `capabilities` adds `backend:"cups"|"winspool"`,
 `operations:["list","get","pause","resume"]`, `mutationPolicy:"explicit-only"`.
 These describe the API, **not** per-printer permissions or guaranteed server

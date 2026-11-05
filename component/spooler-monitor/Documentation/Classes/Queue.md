@@ -12,7 +12,7 @@ and explicit `"Windows-x64"` on Windows. Windows ARM64 is unsupported.
 | `get(queueID : Variant) : Object` | `queue : Object` |
 | `pause(queueID : Variant) : Object` | `mutation : Object`, post-query `queue : Object` |
 | `resume(queueID : Variant) : Object` | `mutation : Object`, post-query `queue : Object` |
-| `version() : Object` | `version:"0.1.0"`, operation `"version"` |
+| `version() : Object` | `version:"0.1.1"`, operation `"version"` |
 | `capabilities() : Object` | `backend:"cups"\|"winspool"`, `operations:["list","get","pause","resume"]`, `mutationPolicy:"explicit-only"` |
 
 `get`, `pause` and `resume` accept only actual Text IDs, 1–1024 UTF-8 bytes,
