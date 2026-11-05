@@ -517,24 +517,16 @@ class DeliveryTests(unittest.TestCase):
                 ["KERNEL32.dll", "WINSPOOL.DRV"])
             self.assertEqual(run.call_args.args[0], [str(dumpbin), "/DEPENDENTS", str(executable)])
 
-    def test_release_requires_opt_in(self):
-        environment = {
-            "GITHUB_REPOSITORY": "owner/example-component", "GITHUB_REF_NAME": "0.1.0",
-            "FOURD_ENABLED": "false",
-        }
+    def test_validate_checks_configuration_only(self):
+        environment = {"GITHUB_REPOSITORY": "owner/example-component"}
         with patch.dict(os.environ, environment, clear=True), patch.object(
-                sys, "argv", ["ci_config.py", "validate", "--release", "--root", str(self.root)]):
+                sys, "argv", ["ci_config.py", "validate", "--root", str(self.root)]):
+            ci_config.main()
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/wrong"}, clear=True), patch.object(
+                sys, "argv", ["ci_config.py", "validate", "--root", str(self.root)]):
             with self.assertRaises(SystemExit) as caught:
                 ci_config.main()
             self.assertEqual(caught.exception.code, 2)
-
-    def test_manual_release_validates_explicit_tag_not_selected_branch_name(self):
-        environment = {"GITHUB_REPOSITORY": "owner/example-component",
-                       "GITHUB_REF_NAME": "main", "FOURD_ENABLED": "true"}
-        with patch.dict(os.environ, environment, clear=True), patch.object(
-                sys, "argv", ["ci_config.py", "validate", "--release", "--tag", "0.1.0",
-                              "--root", str(self.root)]):
-            ci_config.main()
 
     def archive_bytes(self, name, data=b"tool4d", mode=stat.S_IFREG | 0o755):
         output = io.BytesIO()

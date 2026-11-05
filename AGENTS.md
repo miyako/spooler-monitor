@@ -60,7 +60,7 @@ the namespace shares component classes. Underscore names are internal
   Return partial evidence and the precise blocker; do not weaken gates.
 * Do not create tables, authentication/locale settings, setup actions or PDF
   algorithms merely to resemble a reference project.
-* Do not publish, push tags, add signing/account settings or copy credentials
+* Do not run Publish, push tags, add signing/account settings or copy credentials
   unless the user authorized that scope. Local acceptance needs none of them.
 
 ## 2. RUN: inspect and initialize only the destination
@@ -468,41 +468,36 @@ failed status/phase reports. This is a starter identity/wiring regression,
 **not** evidence that UUIDv7 or any other new feature was implemented.
 
 `--tag` validates package/version identity; it does not create/push/publish a tag.
-For approved hosted publication only, set Actions **variable**
-`FOURD_ENABLED=true`; `TOOL4D_URL` / `TOOL4D_SHA256` are optional paired overrides
-of the approved public `package.json.tool` pin, not required secrets. Push the matching
-bare `<version>` tag (e.g. `0.1.1`, `0.2.0-rc.1`; **no `v` prefix**). Only the
-historical `v0.1.0` tag/release keeps its legacy prefix; validators still accept
-it, but never create new `v` tags. Release jobs build same-tag native resources, compile after
-assembly and host-test the unpacked package before publishing `<repository>.zip`.
-Only publication receives built-in `GITHUB_TOKEN` write permission; no personal
-token/version-bot commit is required.
+`TOOL4D_URL` / `TOOL4D_SHA256` are optional paired Actions variable overrides of
+the approved public `package.json.tool` pin, not required secrets.
 
-### Manual Actions dispatch and existing-tag release
+### Publishing: Actions → Publish → Run workflow
 
-After the dispatch-capable workflow is merged to the **default branch**, open
-**Actions → CI → Run workflow** and select a branch for ordinary validation.
-`FOURD_ENABLED` still controls optional hosted 4D steps; CLI-only green is not
-compiled-host green.
+There is exactly one release workflow, `.github/workflows/publish.yml`
+(**Publish**). Open **Actions → Publish → Run workflow** and choose `mode`:
+`patch`, `minor` or `major` (default `patch`). There is no tag-push trigger and
+no version/validation input. Publish:
 
-For this destination, **Actions → Release compiled component → Run workflow**
-has Boolean `validation_only`, default **true**. Validation builds the selected
-immutable `github.sha` through the native matrix and signed-package checks,
-requires neither an existing version tag nor `FOURD_ENABLED`, and cannot
-publish. Section 8 defines the signed artifact gates; ordinary CI's optional
-4D switch does not disable this validation path.
+1. checks out `main`, and `scripts/version.py` computes the next version from
+   the highest existing `X.Y.Z` tag (legacy `vX.Y.Z` is read, prerelease/build
+   tags are ignored; with no tags it bumps `template.json.version`). Existing
+   target tags are rejected;
+2. writes that version into every version-bearing file (`template.json`,
+   `package.json`, the CLI source/README, the feature class/doc and host
+   fixtures), runs static tests and commits `Set version X.Y.Z` to `main`;
+3. reuses `ci.yml` (`workflow_call` with that commit) for the native matrix and
+   assembly, then runs the source host test, real compilation, unsigned
+   intermediate packaging and `scripts/sign_release.py` signing/notarization/
+   final-ZIP host test (section 8);
+4. only then creates the bare tag `X.Y.Z` (**no `v` prefix**) at that commit and
+   a GitHub release named `X.Y.Z` with `dist/<repository>.zip` and its
+   `.signing.json` report.
 
-The production path (`validation_only:false` for dispatch) requires
-`version_tag`, an **already existing** bare `<SemVer>` tag (legacy `v0.1.0` accepted) matching the initialized
-repository's `template.json.version` / `package.json.version`. It creates no
-tag. The gate resolves/peels that tag to a commit SHA, validates source at that
-SHA, and all reusable native CI, assembly, compilation and publication jobs use
-that exact SHA—not the selected UI branch. Packaging receives the normalized
-tag explicitly. Publication refreshes and verifies the tag has not moved, uses
-`--verify-tag`, and remains blocked by compilation or final host failure.
-Do not manually dispatch publication or create a tag without user permission.
-This destination-specific contract supersedes the inherited unsigned release
-instructions; it does not authorize a dispatch, tag creation, publication or merge.
+A failed run leaves no tag; rerunning computes the same version and skips the
+already-committed version bump. Only the version and publish jobs receive
+`contents: write` from the built-in `GITHUB_TOKEN`. **Actions → CI → Run
+workflow** validates a branch; `FOURD_ENABLED=true` only enables CI's optional
+hosted 4D steps. Do not run Publish or create tags without user permission.
 
 ## 7. Report evidence, not assumptions
 
@@ -570,9 +565,8 @@ For a requested local implementation, finish the feature, replace every
 greeting-specific surface, run exact feature/error tests, validate licenses and
 resources, compile fresh, and load the **exact final ZIP's** unpacked component.
 Report unsupported/unavailable checks as `not_run`; local success remains
-`release_ready:false`. Approved publication additionally requires the existing
-matching tag, all required native artifact/tests, hosted 4D opt-in and the final
-package-host gate plus the destination-specific signing/notarization gates in
+`release_ready:false`. Approved publication (the Publish workflow) additionally
+requires all required native artifact/tests and the final package-host gate plus the destination-specific signing/notarization gates in
 section 8. Generic local unsigned acceptance remains a separate path.
 
 The final handoff must identify the repository/namespace/class/CLI/language,
@@ -636,13 +630,11 @@ Never claim this deterministic file-presence check is a legal audit.
 ### Destination-specific signed release contract
 
 Signing implementation is authorized for `miyako/spooler-monitor` through
-`scripts/sign_release.py` and the existing `.github/workflows/release.yml`.
-These destination instructions supersede the template's historical unsigned
-release/seven-secret guidance. They do **not** authorize publication, tag
-creation or merge in the current task. Production remains an immutable
-existing-tag path with `FOURD_ENABLED=true`; validation-only dispatch defaults
-to true, uses the selected immutable `github.sha`, needs no existing tag or
-`FOURD_ENABLED`, and cannot publish.
+`scripts/sign_release.py` and `.github/workflows/publish.yml` (**Publish**,
+single `mode: patch | minor | major` input). These destination instructions
+supersede the template's historical unsigned release/seven-secret guidance.
+They do **not** authorize running Publish, tag creation or merge in the
+current task.
 
 Signing is not a prerequisite for the generic unsigned local
 development/package acceptance path or the free compiler. No local credentials

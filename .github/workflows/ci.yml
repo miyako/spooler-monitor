@@ -1,18 +1,15 @@
 name: CI
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
   workflow_call:
     inputs:
-      source_sha:
-        description: Exact normalized commit to build
+      ref:
+        description: Commit to build (Publish passes its version commit and runs 4D steps itself)
         type: string
         default: ''
-      release_call:
-        description: Release caller performs mandatory 4D acceptance separately
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -27,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -55,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -92,7 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -117,20 +114,20 @@ jobs:
           path: ${{ steps.assemble.outputs.resources }}
           if-no-files-found: error
           retention-days: 7
-      - name: Download pinned free tool4D for optional branch and PR integration tests
-        if: vars.FOURD_ENABLED == 'true' && github.ref_type != 'tag' && !inputs.release_call
+      - name: Download pinned free tool4D for optional integration tests
+        if: vars.FOURD_ENABLED == 'true' && !inputs.ref
         env:
           TOOL4D_URL: ${{ vars.TOOL4D_URL }}
           TOOL4D_SHA256: ${{ vars.TOOL4D_SHA256 }}
         run: python scripts/ci_config.py download-tool4d
       - name: Test interpreted component from a real 4D host
-        if: vars.FOURD_ENABLED == 'true' && github.ref_type != 'tag' && !inputs.release_call
+        if: vars.FOURD_ENABLED == 'true' && !inputs.ref
         run: python scripts/test_4d.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
       - name: Compile both 4D targets
-        if: vars.FOURD_ENABLED == 'true' && github.ref_type != 'tag' && !inputs.release_call
+        if: vars.FOURD_ENABLED == 'true' && !inputs.ref
         run: python scripts/compile_component.py --tool4d .tools/tool4d.app/Contents/MacOS/tool4d
       - name: Package and test the actual compiled component
-        if: vars.FOURD_ENABLED == 'true' && github.ref_type != 'tag' && !inputs.release_call
+        if: vars.FOURD_ENABLED == 'true' && !inputs.ref
         shell: python
         run: |
           import os, subprocess, sys

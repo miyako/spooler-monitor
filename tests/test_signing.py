@@ -13,7 +13,6 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import sign_release as signing
-import release_ref
 import native_dependencies
 from build_provenance import sha256, source_digest
 import test_delivery
@@ -209,34 +208,17 @@ class SigningTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 signing.assess_cli(path)
 
-    def test_validation_ref_never_resolves_tag_or_allows_pr(self):
-        with patch.object(release_ref, "commit", return_value="a" * 40), patch.object(
-                release_ref, "load_config", return_value={"version": "0.1.0"}), patch.object(
-                release_ref, "tag_commit") as tag:
-            result = release_ref.validation(ROOT, event="workflow_dispatch", event_sha="a" * 40)
-            self.assertEqual(result["validation_only"], "true")
-            self.assertEqual(result["sha"], "a" * 40)
-            self.assertEqual(result["tag"], "0.1.0")
-            tag.assert_not_called()
-            for event in ("pull_request", "push", "workflow_call"):
-                with self.assertRaises(ValueError):
-                    release_ref.validation(ROOT, event=event, event_sha="a" * 40)
-            with self.assertRaises(ValueError):
-                release_ref.validation(ROOT, event="workflow_dispatch", event_sha="b" * 40)
-
-    def test_production_publish_and_secret_access_are_gated(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    def test_publish_signs_verifies_and_releases_in_order(self):
+        workflow = (ROOT / ".github/workflows/publish.yml").read_text()
         self.assertNotIn("pull_request:", workflow)
-        self.assertIn("default: true", workflow)
-        self.assertIn("if: needs.gate.outputs.validation_only == 'false' && github.event_name != 'pull_request'", workflow)
-        self.assertIn("github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'", workflow)
-        self.assertIn("if: failure()", workflow)
+        self.assertNotIn("tags:", workflow)
         self.assertNotIn("continue-on-error", workflow)
         self.assertNotIn("CODESIGN_APPLE_ID", workflow)
         for name in signing.SECRETS:
             self.assertEqual(workflow.count("${{ secrets." + name + " }}"), 1)
-        self.assertLess(workflow.index("sign_release.py --verify-report"), workflow.index("compiled-release"))
         publish = workflow.split("  publish:", 1)[1]
+        self.assertLess(publish.index("compile_component.py"), publish.index("sign_release.py --tool4d"))
+        self.assertLess(publish.index("sign_release.py --tool4d"), publish.index("sign_release.py --verify-report"))
         self.assertLess(publish.index("sign_release.py --verify-report"), publish.index("gh release create"))
 
     def test_dylib_own_install_name_is_not_a_runtime_dependency(self):

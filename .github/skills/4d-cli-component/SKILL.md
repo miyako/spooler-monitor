@@ -51,13 +51,12 @@ scripts/tests. Resolve all paths below from the repository root, not this folder
 
 ## spooler-monitor signed release contract
 
-The authorized `scripts/sign_release.py` integration in the existing
-`release.yml` uses `workflow_dispatch.validation_only`, Boolean default **true**.
-Validation builds the selected immutable `github.sha` with no existing tag or
-`FOURD_ENABLED` requirement and **cannot publish**. The production path remains
-an immutable existing matching version-tag build gated by `FOURD_ENABLED=true`,
-with tag re-verification before future authorized publication. Do not create
-tags, publish or merge in the current task.
+Release only through **Actions → Publish → Run workflow** (`publish.yml`,
+single `mode: patch | minor | major` input). It bumps from the latest `X.Y.Z`
+tag (legacy `v` read) via `scripts/version.py`, commits the version to `main`,
+reuses `ci.yml` for native builds, compiles, signs/notarizes with
+`scripts/sign_release.py`, then creates bare tag/release `X.Y.Z`. Do not run
+Publish, create tags or merge without user permission.
 
 Six registered Actions secrets supply the base64 Developer ID Application P12
 including private key, its password, temporary keychain password and notary

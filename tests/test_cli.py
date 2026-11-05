@@ -7,6 +7,7 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads((ROOT / "template.json").read_text(encoding="utf-8"))["version"]
 USAGE = (
     "expected list, get|pause|resume <queueID>, capabilities, "
     "inspect-argument <text>, or --version"
@@ -79,7 +80,7 @@ class CppCLI(unittest.TestCase):
 
     def test_version(self):
         self.assertEqual(self.run_cli(["--version"]), {
-            "protocol": 1, "ok": True, "operation": "version", "version": "0.1.0"
+            "protocol": 1, "ok": True, "operation": "version", "version": VERSION
         })
 
     def test_capabilities(self):
@@ -211,7 +212,7 @@ class CppCLI(unittest.TestCase):
                     expected = case[stream]
                     if isinstance(expected, dict):
                         expected = json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
-                        expected = expected.replace("$VERSION", "0.1.0") + "\n"
+                        expected = expected.replace("$VERSION", VERSION) + "\n"
                     self.assertEqual(getattr(result, stream), expected.encode("utf-8"))
 
 
